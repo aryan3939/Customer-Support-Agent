@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+@theme {
+  --color-surface: #0f1117;
+  --color-surface-2: #1a1d27;
+  --color-surface-3: #252836;
+  --color-border: #2e3348;
+  --color-text: #e4e6f0;
+  --color-text-dim: #8b8fa3;
+  --color-accent: #6366f1;
+  --color-accent-hover: #818cf8;
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-info: #3b82f6;
+}
+
+body {
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--color-surface); }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-dim); }
+
+/* Sidebar transitions */
+.sidebar-transition {
+  transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              padding 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar-label {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.main-transition {
+  transition: margin-left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Right panel collapse */
+.panel-transition {
+  transition: max-width 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              opacity 0.2s ease,
+              padding 0.25s ease;
+}
+
+/* Action card animations */
+.action-card {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.action-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* Status badge pulse for escalated */
+@keyframes pulse-danger {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+.pulse-danger {
+  animation: pulse-danger 2s ease-in-out infinite;
+}
+
+/* Toggle button styles */
+.toggle-btn {
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+.toggle-btn:hover {
+  background-color: var(--color-surface-3);
+  color: var(--color-text);
+}
