@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState, createContext, useContext } from "react";
+import { useState, useEffect, createContext, useContext } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useAuth } from "@/hooks/useAuth";
 import "./globals.css";
 
 // =============================================================================
@@ -28,6 +30,14 @@ function Sidebar({
   collapsed: boolean;
   onToggle: () => void;
 }) {
+  const { user, role, signOut } = useAuth();
+  const router = useRouter();
+
+  async function handleSignOut() {
+    await signOut();
+    router.push("/login");
+  }
+
   return (
     <aside
       className={`fixed left-0 top-0 h-screen bg-surface-2 border-r border-border flex flex-col z-10 sidebar-transition ${
@@ -62,6 +72,14 @@ function Sidebar({
           label="Analytics"
           collapsed={collapsed}
         />
+        {role === "admin" && (
+          <NavLink
+            href="/admin"
+            icon="🛡️"
+            label="Admin Panel"
+            collapsed={collapsed}
+          />
+        )}
       </nav>
 
       {/* Collapse toggle */}
@@ -73,9 +91,38 @@ function Sidebar({
         {collapsed ? "→" : "←"}
       </button>
 
+      {/* User Info & Sign Out */}
+      {!collapsed && user && (
+        <div className="p-4 border-t border-border">
+          <div className="text-[11px] text-text-dim truncate mb-1.5">
+            {user.email}
+          </div>
+          <div className="flex items-center justify-between">
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded-full"
+              style={{
+                background:
+                  role === "admin"
+                    ? "rgba(138,92,246,0.15)"
+                    : "rgba(99,102,241,0.15)",
+                color: role === "admin" ? "#a78bfa" : "#818cf8",
+              }}
+            >
+              {role}
+            </span>
+            <button
+              onClick={handleSignOut}
+              className="text-[11px] text-text-dim hover:text-red-400 transition-colors cursor-pointer"
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Footer */}
       {!collapsed && (
-        <div className="p-4 border-t border-border">
+        <div className="px-4 pb-3">
           <div className="text-[11px] text-text-dim">
             Powered by LangGraph + Gemini
           </div>
@@ -120,6 +167,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const pathname = usePathname();
+
+  // Don't show sidebar on login page
+  const isLoginPage = pathname === "/login";
 
   return (
     <html lang="en">
@@ -131,22 +182,63 @@ export default function RootLayout({
         />
       </head>
       <body className="antialiased" suppressHydrationWarning>
-        <SidebarContext.Provider
-          value={{ collapsed, toggle: () => setCollapsed(!collapsed) }}
-        >
-          <Sidebar
-            collapsed={collapsed}
-            onToggle={() => setCollapsed(!collapsed)}
-          />
-          <main
-            className={`min-h-screen p-6 main-transition ${
-              collapsed ? "ml-16" : "ml-56"
-            }`}
-          >
-            {children}
-          </main>
-        </SidebarContext.Provider>
+        {isLoginPage ? (
+          children
+        ) : (
+          <AuthGuard>
+            <SidebarContext.Provider
+              value={{ collapsed, toggle: () => setCollapsed(!collapsed) }}
+            >
+              <Sidebar
+                collapsed={collapsed}
+                onToggle={() => setCollapsed(!collapsed)}
+              />
+              <main
+                className={`min-h-screen p-6 main-transition ${
+                  collapsed ? "ml-16" : "ml-56"
+                }`}
+              >
+                {children}
+              </main>
+            </SidebarContext.Provider>
+          </AuthGuard>
+        )}
       </body>
     </html>
   );
+}
+
+// =============================================================================
+// Auth Guard — redirects to /login if not authenticated
+// =============================================================================
+
+function AuthGuard({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push("/login");
+    }
+  }, [loading, user, router]);
+
+  if (loading || !user) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#0a0a0f",
+          color: "#94a3b8",
+          fontSize: "0.875rem",
+        }}
+      >
+        Loading...
+      </div>
+    );
+  }
+
+  return <>{children}</>;
 }

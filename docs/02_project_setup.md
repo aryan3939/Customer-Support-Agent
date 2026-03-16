@@ -1,333 +1,179 @@
-# Phase 1B: Project Setup Code
+# 02 — Project Setup (Config, Logging, FastAPI Bootstrap)
 
-## Why This Step?
-
-In the previous step we installed tools and configured secrets. Now we write the **first actual Python code** — the skeleton that everything else will be built on.
-
-Think of it like building a house:
-- Phase 1A (Environment) = Laying the foundation, connecting water and electricity
-- **Phase 1B (This step)** = Building the frame — walls, roof structure, front door
-- Phase 2+ = Furnishing the rooms (AI agent logic, tools, etc.)
-
-We create three critical files:
-1. **`config.py`** — How the app reads its settings
-2. **`logging.py`** — How the app reports what it's doing
-3. **`main.py`** — The front door (HTTP server)
-
-Without these three, nothing else can work.
+How the application bootstraps itself — from loading environment variables
+to starting the HTTP server.
 
 ---
 
-## Files Created
+## 2.1 Configuration Management (`src/config.py`)
 
-```
-src/
-├── __init__.py         ← Makes 'src' a Python package
-├── config.py           ← Settings management
-├── main.py             ← FastAPI application entry point
-└── utils/
-    ├── __init__.py     ← Makes 'utils' a Python package
-    └── logging.py      ← Structured logging setup
-```
+### The Problem
 
----
+Every application needs settings: database URLs, API keys, feature flags.
+Hardcoding them is dangerous (secrets in source code) and inflexible
+(can't change without redeploying).
 
-## File-by-File Breakdown
+### The Solution: Pydantic Settings
 
-### `src/config.py` — Settings Management
-
-#### Why It Exists
-
-Every application needs configuration: database URLs, API keys, feature flags. There are three ways to handle this, from worst to best:
+We use `pydantic-settings` to:
+1. Read settings from `.env` file (or environment variables)
+2. **Validate** them at startup (fail fast if something is missing)
+3. Provide **typed access** with IDE autocomplete (no typos)
+4. **Centralize** ALL configuration in one place
 
 ```python
-# ❌ BAD: Hardcoded secrets
-database_url = "postgresql://admin:superSecretPassword@prod-server/db"
+from pydantic_settings import BaseSettings
 
-# ⚠️ OKAY: Environment variables (no validation)
-import os
-database_url = os.getenv("DATABASE_URL")  # Could be None — crashes later!
-
-# ✅ BEST: Pydantic Settings (validated, typed, documented)
-from src.config import settings
-settings.DATABASE_URL  # Guaranteed to exist, correct type, validated
-```
-
-#### How It Works
-
-Pydantic Settings automatically reads environment variables and validates them:
-
-```python
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",        # ← Read from this file
-        case_sensitive=False,   # ← DATABASE_URL = database_url
-        extra="ignore",         # ← Unknown vars in .env won't cause errors
-    )
-    
-    DATABASE_URL: str           # REQUIRED — no default, must be in .env
-    DEBUG: bool = True          # OPTIONAL — has a default value
+    DATABASE_URL: str                              # REQUIRED — no default
+    LLM_PROVIDER: Literal["google", "groq"] = "google"  # Optional with default
     LLM_TEMPERATURE: float = Field(default=0.3, ge=0.0, le=1.0)  # Validated range
 ```
 
-What happens at startup:
+### How It Works
+
 ```
-.env file → Pydantic reads it → Validates every field → Creates Settings object
-                                    ↓ (if validation fails)
-                              Crashes IMMEDIATELY with clear error:
-                              "DATABASE_URL: field required"
+.env file:    DATABASE_URL=postgresql+asyncpg://...
+                    ↓
+load_dotenv()      sets it in os.environ
+                    ↓
+Settings()         reads from os.environ, validates types
+                    ↓
+settings.DATABASE_URL → "postgresql+asyncpg://..."  (typed, validated)
 ```
 
-This is called **"fail fast"** — better to crash at startup with a clear message than crash 10 minutes later with a confusing database error.
+### Why `load_dotenv()` Before Pydantic?
 
-#### Key Design Decisions
+Pydantic Settings reads `.env` into its own fields, but does **not** set
+`os.environ`. The LangChain/LangSmith SDK reads `LANGCHAIN_*` variables
+directly from `os.environ`. Without `load_dotenv()`, LangSmith tracing
+wouldn't work even though the values are in `.env`.
 
-**`Literal` types for constrained values:**
-```python
-APP_ENV: Literal["development", "staging", "production"] = "development"
-LLM_PROVIDER: Literal["google", "groq"] = "google"
-```
-If someone sets `APP_ENV=invalid`, Pydantic rejects it immediately.
+### Settings Categories
 
-**`Field` for numeric constraints:**
-```python
-LLM_TEMPERATURE: float = Field(default=0.3, ge=0.0, le=1.0)
-```
-`ge=0.0` means "greater than or equal to 0", `le=1.0` means "less than or equal to 1". Prevents invalid temperatures.
-
-**`get_settings()` function:**
-```python
-def get_settings() -> Settings:
-    return Settings()
-```
-Why a function instead of just a global `settings`? Because in tests, we can override it:
-```python
-# In tests:
-app.dependency_overrides[get_settings] = lambda: Settings(DEBUG=False)
-```
-
-**Module-level `settings` instance:**
-```python
-settings = get_settings()  # Runs on first import
-```
-For non-test code, this gives us a global singleton. If `.env` is missing required fields, the app crashes at import time — the earliest possible moment.
+| Section | Variables | Purpose |
+|---------|-----------|---------|
+| Application | `APP_NAME`, `APP_ENV`, `DEBUG`, `LOG_LEVEL` | Basic app config |
+| Database | `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY` | PostgreSQL connection |
+| LLM | `LLM_PROVIDER`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `LLM_MODEL`, `LLM_TEMPERATURE` | AI configuration |
+| LangSmith | `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` | Tracing & observability |
+| Embeddings | `EMBEDDING_MODEL` | RAG model selection |
+| Security | `JWT_SECRET`, `API_KEY_SALT`, `SUPABASE_JWT_SECRET` | Auth configuration |
+| AI Behavior | `ENABLE_AUTO_RESOLUTION`, `MAX_AUTO_ATTEMPTS`, `ESCALATION_CONFIDENCE_THRESHOLD` | Agent behavior tuning |
 
 ---
 
-### `src/utils/logging.py` — Structured Logging
+## 2.2 Structured Logging (`src/utils/logging.py`)
 
-#### Why It Exists
-
-**Standard Python logging:**
-```
-2025-02-10 05:00:00,000 INFO ticket created for user@example.com
-```
-This is just a string. To find all logs for ticket `abc-123`, you'd need regex.
-
-**Structured logging (what we use):**
-```json
-{"timestamp": "2025-02-10T05:00:00", "level": "info", "event": "ticket_created", 
- "email": "user@example.com", "ticket_id": "abc-123"}
-```
-This is machine-readable JSON. Finding ticket `abc-123` = one database query.
-
-#### How It Works
-
-We use `structlog`, which wraps Python's standard `logging` with a processing pipeline:
+### Why Not Just `print()` or Basic `logging`?
 
 ```python
-logger.info("ticket_created", email="user@example.com", ticket_id="abc-123")
+# ❌ Unstructured — works for debugging, useless at scale
+print(f"Created ticket {ticket_id} for {email}")
+
+# ✅ Structured — machine-parsable, searchable, filterable
+logger.info("ticket_created", ticket_id="abc-123", customer="user@example.com")
 ```
 
-This goes through a pipeline:
+### How structlog Works
+
+structlog produces **key-value log entries** instead of free-text messages:
+
+**Development output (colored terminal):**
 ```
-[Your log call]
-    ↓
-[add_log_level]     → Adds "level": "info"
-[add_logger_name]   → Adds "logger": "src.main"
-[TimeStamper]       → Adds "timestamp": "2025-02-10T05:00:00Z"
-    ↓
-[ConsoleRenderer]   → Pretty colored output (development)
-   or
-[JSONRenderer]      → JSON output (production)
+2026-02-18 15:30:00 [info] ticket_created  ticket_id=abc-123 customer=user@example.com priority=high
 ```
 
-#### Two Output Modes
-
-**Development** (`json_format=False`):
-```
-2025-02-10 05:00:00 [info     ] ticket_created    email=user@example.com ticket_id=abc-123
-```
-Human-readable, colored in the terminal. Easy to scan visually.
-
-**Production** (`json_format=True`):
+**Production output (JSON — for Datadog, ELK, CloudWatch):**
 ```json
-{"timestamp": "2025-02-10T05:00:00Z", "level": "info", "event": "ticket_created", "email": "user@example.com", "ticket_id": "abc-123"}
+{"event": "ticket_created", "ticket_id": "abc-123", "customer": "user@example.com", "priority": "high", "timestamp": "2026-02-18T15:30:00Z"}
 ```
-Machine-readable, one JSON object per line. Parsed by log aggregators (CloudWatch, Grafana, ELK).
 
-#### Silencing Noisy Loggers
+### Configuration
+
+The logging format switches based on `APP_ENV`:
+- `development` → Colored console output with human-friendly formatting
+- `production` → JSON output for log aggregation services
+
 ```python
-logging.getLogger("uvicorn").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# In any file:
+from src.utils.logging import get_logger
+logger = get_logger(__name__)  # Logger named after the module
+
+logger.info("something_happened", key="value", count=42)
+logger.error("something_failed", error=str(e), ticket_id=str(tid))
 ```
-Without this, uvicorn logs every single HTTP request, flooding our logs with noise. We only want to see warnings and errors from third-party libraries.
 
 ---
 
-### `src/main.py` — FastAPI Application
+## 2.3 FastAPI Application (`src/main.py`)
 
-#### Why It Exists
+### What Happens When You Run `uvicorn src.main:app --reload`
 
-This is the **front door** of our application. Every HTTP request enters through here. It:
-1. Starts the server
-2. Routes requests to the right handler
-3. Returns responses
+```
+1. Python imports src/main.py
+2. config.py runs → loads .env, validates settings (crashes if invalid)
+3. logging.py runs → configures structlog
+4. FastAPI app is created with title, description, version
+5. CORS middleware is added (allows frontend at :3000 to call backend at :8000)
+6. Routes are registered (tickets, admin, analytics, webhooks)
+7. Lifespan context manager starts:
+   a. Connects to PostgreSQL (creates connection pool)
+   b. Loads sentence-transformers embedding model
+   c. Yields (app starts serving requests)
+8. On shutdown:
+   a. Closes database connections
+   b. Flushes logs
+```
 
-#### The Lifespan Pattern
+### The Lifespan Pattern
+
+FastAPI's modern way to handle startup/shutdown (replaces the deprecated
+`@app.on_event("startup")` pattern):
 
 ```python
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # STARTUP code — runs once when server starts
-    logger.info("application_starting")
-    # Connect to database, load models, etc.
-    
-    yield  # ← Server runs here, handling requests
-    
-    # SHUTDOWN code — runs once when server stops
-    logger.info("application_stopped")
-    # Close connections, flush caches, etc.
+    # ── STARTUP ──
+    await init_db()                     # Connect to database
+    embedding_service.load_model()      # Load AI model
+
+    yield  # ← App runs here
+
+    # ── SHUTDOWN ──
+    await close_db()                    # Close connections
 ```
 
-**Why `asynccontextmanager`?** It's FastAPI's modern pattern for startup/shutdown. The old way (`@app.on_event("startup")`) is deprecated. This guarantees cleanup runs even if the app crashes.
+**Why a context manager?** Guarantees cleanup runs even if the app crashes.
 
-**What's `yield`?** It's a Python generator concept:
-- Code before `yield` = startup
-- `yield` itself = "pause here, let the app run"
-- Code after `yield` = shutdown (guaranteed to execute)
+### CORS Middleware
 
-#### FastAPI App Creation
-
-```python
-app = FastAPI(
-    title=settings.APP_NAME,               # Shows in Swagger UI
-    description="AI-powered customer...",   # Shows in Swagger UI
-    version="0.1.0",                        # API version
-    lifespan=lifespan,                      # Our startup/shutdown handler
-    docs_url="/docs",                       # Swagger UI endpoint 
-)
-```
-
-`docs_url="/docs"` gives us a **free interactive API documentation** page. Visit `http://localhost:8000/docs` to try out endpoints directly in the browser.
-
-#### CORS Middleware
+CORS (Cross-Origin Resource Sharing) is required because the frontend
+(`localhost:3000`) needs to make API calls to the backend (`localhost:8000`).
+Browsers block cross-origin requests by default for security.
 
 ```python
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.is_development else [],
-    ...
+    allow_origins=["*"],          # Allow all origins in development
+    allow_credentials=True,       # Allow cookies/auth headers
+    allow_methods=["*"],          # Allow GET, POST, PATCH, DELETE, etc.
+    allow_headers=["*"],          # Allow Authorization, Content-Type, etc.
 )
 ```
 
-**What is CORS?** Cross-Origin Resource Sharing. If your frontend runs on `localhost:3000` and your API on `localhost:8000`, the browser blocks requests between them by default (security). CORS middleware tells the browser "it's okay, allow it."
+### Route Registration
 
-**Why `["*"]` in development?** Allow any frontend to connect during development. In production, you'd restrict this to your actual frontend domain.
-
-#### Health Check Endpoint
+Routes are defined in separate files and connected to the app:
 
 ```python
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "checks": {
-            "database": "not_configured",
-            "redis": "not_configured",
-        },
-    }
+from src.api.routes.tickets import router as tickets_router
+from src.api.routes.admin import router as admin_router
+from src.api.routes.analytics import router as analytics_router
+from src.api.routes.webhooks import router as webhooks_router
+
+app.include_router(tickets_router)    # /api/v1/tickets/*
+app.include_router(admin_router)      # /api/v1/admin/*
+app.include_router(analytics_router)  # /api/v1/analytics/*
+app.include_router(webhooks_router)   # /api/v1/webhooks/*
 ```
-
-**Why `health_check`?** Every production app needs one:
-- **Load balancers** (AWS ALB, nginx) use it to check if a server is alive
-- **Docker** uses it in `healthcheck` to restart crashed containers
-- **Monitoring tools** alert you when it fails
-- **You** can quickly verify the API is running
-
-The `timestamp` field proves the response is live (not cached). The `checks` object will later report real database/Redis status.
-
----
-
-## How They Connect
-
-```
-uvicorn src.main:app --reload
-    │
-    ├── 1. Python imports src.main
-    │       └── Imports src.config → reads .env → creates Settings
-    │       └── Imports src.utils.logging → (module is ready)
-    │
-    ├── 2. main.py runs setup_logging() → configures structlog
-    │
-    ├── 3. main.py creates app = FastAPI(lifespan=lifespan)
-    │
-    ├── 4. uvicorn starts the server
-    │       └── Calls lifespan() STARTUP section
-    │       └── Logs "application_started"
-    │
-    └── 5. Server is ready! Handles requests:
-            GET /       → root()        → {"name": "...", "status": "running"}
-            GET /health → health_check() → {"status": "healthy", ...}
-            GET /docs   → Swagger UI     → Interactive API documentation
-```
-
----
-
-## Supabase Change
-
-We switched from local Docker PostgreSQL to **Supabase** (cloud-hosted):
-
-| Before | After |
-|--------|-------|
-| PostgreSQL in Docker | Supabase (cloud, free 500MB) |
-| `docker-compose` had postgres + redis | `docker-compose` has Redis only |
-| Connection: `localhost:5432` | Connection: Supabase URL |
-
-**Why Supabase?**
-- pgvector is **built-in** (no extension setup needed)
-- Free tier: 500MB database, 1GB storage
-- No Docker needed for the database
-- Web dashboard to inspect data visually
-- Automatic backups
-
----
-
-## How to Test
-
-```bash
-# 1. Make sure .env exists with DATABASE_URL
-copy .env.example .env
-# Edit .env with your actual values
-
-# 2. Activate venv
-.venv\Scripts\activate
-
-# 3. Run the server
-uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
-
-# 4. Visit in browser:
-#    http://localhost:8000         → API root
-#    http://localhost:8000/health  → Health check
-#    http://localhost:8000/docs    → Swagger UI
-```
-
----
-
-## What's Next?
-
-With the skeleton running, Phase 1 continues with:
-1. **Database models** (`src/db/models.py`) — SQLAlchemy models for tickets, customers, etc.
-2. **Alembic migrations** — Version-controlled database schema
-3. **Database session** (`src/db/session.py`) — Connection pooling

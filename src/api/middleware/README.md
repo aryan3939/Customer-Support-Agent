@@ -1,33 +1,59 @@
-# `middleware/` — Request Middleware
+# `src/api/middleware/` — Middleware & Cross-Cutting Concerns
 
-Middleware intercepts every HTTP request **before** it reaches the route handler.
-This folder contains cross-cutting concerns that apply to all routes.
+Middleware runs on **every request** — before *and* after the route handler.
+It's used for concerns that apply globally (error handling, rate limiting,
+logging, CORS) rather than to specific endpoints.
 
 ## Files
 
-### `auth.py` — API Key Authentication
-**Placeholder implementation.** Checks for an `X-API-Key` header and validates
-it against a configured key. In production, this would:
-- Validate JWTs or API keys against a database
-- Extract user identity and attach it to the request
-- Return 401/403 for invalid credentials
+### `auth.py` — API Key Authentication Middleware (1.7KB)
 
-### `rate_limit.py` — Rate Limiting
-**Placeholder implementation.** Tracks request counts per IP address using an
-in-memory dictionary. In production, this would:
-- Use Redis for distributed rate limiting
-- Support different limits per endpoint or user tier
-- Return 429 (Too Many Requests) with retry-after headers
+Legacy API key authentication middleware. This was the **original auth system**
+before Supabase JWT auth was added. It's still available as an alternative
+authentication method for programmatic API access (server-to-server calls).
 
-## Why Placeholders?
+**How it differs from JWT auth:**
+- **JWT auth** (`api/deps/auth.py`) — used by the frontend, verifies Supabase tokens
+- **API key auth** (`middleware/auth.py`) — used for programmatic access, simpler but less secure
 
-These files demonstrate the **pattern** without requiring external infrastructure.
-They show where auth and rate limiting plug into the stack, making it easy to
-swap in real implementations later (e.g., Auth0, Redis, CloudFlare).
+---
 
-## How to Explain This
+### `rate_limit.py` — Rate Limiting (1.6KB)
 
-> "Middleware handles cross-cutting concerns like authentication and rate limiting.
-> I implemented these as placeholders to demonstrate the integration pattern
-> without requiring external services. In production, `auth.py` would validate
-> JWTs and `rate_limit.py` would use Redis for distributed limiting."
+Prevents API abuse by limiting request frequency. This is a placeholder/stub
+that can be connected to Redis for production use.
+
+**How rate limiting works:**
+```
+Client sends request → Rate limiter checks counter
+    ├── Under limit → Allow request, increment counter
+    └── Over limit → Return 429 Too Many Requests
+```
+
+**Configuration:** Uses `REDIS_URL` from settings for distributed rate limiting across multiple server instances.
+
+---
+
+### `__init__.py` — Package Init
+
+Makes the folder importable.
+
+## How Middleware Is Registered
+
+In `main.py`, middleware is added to the FastAPI app:
+
+```python
+app = FastAPI()
+
+# CORS middleware — allows frontend (localhost:3000) to call backend (localhost:8000)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,  # ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+> **Note:** The primary authentication is done via FastAPI's `Depends()` system
+> (see `api/deps/auth.py`), not via middleware. This gives per-route control.

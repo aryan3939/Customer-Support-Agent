@@ -115,6 +115,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     JWT_SECRET: str = "change-this-in-production"
     API_KEY_SALT: str = "change-this-too"
+    SUPABASE_JWT_SECRET: str = ""  # From Supabase Dashboard → Settings → API → JWT Secret
     
     # ==========================================================================
     # AI Agent Behavior

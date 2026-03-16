@@ -91,7 +91,15 @@ async def lifespan(app: FastAPI):
                        message="App will run but DB features won't work")
     
     # TODO: Initialize Redis connection
-    # TODO: Load embedding model
+    
+    # Load the sentence-transformers embedding model for RAG search.
+    # This takes ~2-5 seconds on first run (downloads model) but is instant after.
+    try:
+        from src.services.embedding_service import embedding_service
+        embedding_service.load_model()
+    except Exception as e:
+        logger.warning("embedding_model_load_skipped", error=str(e),
+                       message="KB search will fall back to keyword matching")
     
     logger.info("application_started", message="All systems ready ✓")
     
@@ -192,7 +200,9 @@ async def health_check():
 from src.api.routes.tickets import router as tickets_router
 from src.api.routes.webhooks import router as webhooks_router
 from src.api.routes.analytics import router as analytics_router
+from src.api.routes.admin import router as admin_router
 
 app.include_router(tickets_router)
 app.include_router(webhooks_router)
 app.include_router(analytics_router)
+app.include_router(admin_router)

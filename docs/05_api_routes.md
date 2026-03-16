@@ -1,171 +1,237 @@
-# Phase 3: API Routes
+# 05 — API Routes & Pydantic Schemas
 
-## Why This Phase?
-
-Phase 2 built the AI agent brain. But that brain is trapped inside Python
-functions — no external client can USE it. This phase adds the **HTTP interface**:
-
-- **Web frontend** sends a POST → ticket gets processed → gets AI response back
-- **Mobile app** hits the same API → same result
-- **Postman** for testing → instant playground
+How the REST API is built — endpoints, validation, dependency injection,
+and request/response schemas.
 
 ---
 
-## Endpoints
+## 5.1 FastAPI Route Architecture
 
-| Method | Endpoint | What It Does |
-|--------|----------|-------------|
-| `POST` | `/api/v1/tickets` | Create ticket → AI processes → returns response |
-| `GET` | `/api/v1/tickets` | List tickets with filters & pagination |
-| `GET` | `/api/v1/tickets/{id}` | Get ticket details + messages + audit trail |
-| `POST` | `/api/v1/tickets/{id}/messages` | Add follow-up message (AI auto-replies) |
-| `PATCH` | `/api/v1/tickets/{id}/status` | Update ticket status |
-| `GET` | `/api/v1/tickets/{id}/actions` | View AI agent audit trail |
+### How Routes Work
+
+```python
+# Every route function follows this pattern:
+@router.post("/tickets", response_model=TicketDetailResponse)
+async def create_ticket(
+    request: CreateTicketRequest,                                # ← Pydantic validates body
+    current_user: CurrentUser = Depends(get_current_user),       # ← JWT verified
+    db: AsyncSession = Depends(get_db_session),                  # ← DB connection from pool
+):
+    # By the time this runs, authentication and validation are DONE
+    # The function just focuses on business logic
+```
+
+**Key concept:** FastAPI's `Depends()` system injects objects automatically:
+- `get_current_user` — reads JWT from `Authorization` header, verifies it, returns user
+- `get_db_session` — grabs a connection from the pool, auto-commits/rollbacks
 
 ---
 
-## Files Created
+## 5.2 Ticket Endpoints (`api/routes/tickets.py`)
+
+### POST `/api/v1/tickets` — Create Ticket
+
+The most complex endpoint. Here's what happens:
 
 ```
-src/api/
-├── __init__.py
-├── schemas/
-│   ├── __init__.py
-│   └── ticket.py          ← Request/response Pydantic models
-└── routes/
-    └── tickets.py         ← 6 REST endpoints
+1. Request validated    (Pydantic: email, subject 5-200 chars, message 10+ chars)
+2. JWT verified         (get_current_user: extracts email and role)
+3. Customer found/created (get_or_create_customer: ensure DB record exists)
+4. Ticket saved         (INSERT into tickets table with status "new")
+5. Initial message saved (INSERT into messages with sender_type "customer")
+6. AI agent processes   (LangGraph: classify → search → respond → validate)
+7. AI response saved    (INSERT into messages with sender_type "ai_agent")
+8. Classification saved (UPDATE ticket with intent, priority, sentiment, category)
+9. Audit trail saved    (INSERT into agent_actions for each AI step)
+10. Full ticket returned (ticket + messages + actions as JSON)
 ```
 
----
-
-## How It All Connects
-
-```
-Client (Browser/Postman)
-    │
-    ▼  POST /api/v1/tickets  {"subject": "...", "message": "..."}
-┌───────────────────────────────────────────────────────┐
-│  FastAPI                                               │
-│  ├─ Pydantic validates the request (schemas/ticket.py) │
-│  ├─ Route handler creates ticket (routes/tickets.py)   │
-│  │   └─ Calls process_ticket() (agents/graph.py)       │
-│  │       └─ classify → search_kb → resolve → validate  │
-│  └─ Returns JSON response                              │
-└───────────────────────────────────────────────────────┘
-    │
-    ▼  Response: {"id": "...", "initial_response": "Here's how to...", "priority": "high"}
-```
-
----
-
-## Request/Response Examples
-
-### Create a Ticket
-
-```bash
-curl -X POST http://localhost:8000/api/v1/tickets \
-  -H "Content-Type: application/json" \
-  -d '{
-    "customer_email": "user@example.com",
-    "subject": "Cannot reset my password",
-    "message": "I have tried 3 times but no email arrives. Checked spam too.",
-    "channel": "web"
-  }'
-```
-
-**Response:**
+**Request body:**
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "open",
-  "priority": "high",
-  "category": "account",
-  "sentiment": "negative",
-  "assigned_to": {"id": "ai-agent-001", "name": "Support AI", "is_ai": true},
-  "initial_response": "I understand you're having trouble with password reset emails...",
-  "escalated": false,
-  "created_at": "2025-02-10T00:30:00Z"
+    "customer_email": "user@example.com",
+    "subject": "Cannot reset my password",
+    "message": "I tried clicking forgot password 3 times but no reset email arrives.",
+    "channel": "web"
 }
 ```
 
-### List Tickets
-
-```bash
-# All tickets
-curl http://localhost:8000/api/v1/tickets
-
-# Filtered
-curl "http://localhost:8000/api/v1/tickets?status=open&priority=high&limit=10"
-```
-
-### Get Ticket Details
-
-```bash
-curl http://localhost:8000/api/v1/tickets/550e8400-e29b-41d4-a716-446655440000
-```
-
-Returns full ticket with message thread and AI action audit trail.
-
-### Add Follow-Up Message
-
-```bash
-curl -X POST http://localhost:8000/api/v1/tickets/550e8400/messages \
-  -H "Content-Type: application/json" \
-  -d '{"content": "I still have not received the email"}'
-```
-
-The AI automatically processes the follow-up and adds its response.
+**Response:** Full ticket with messages, classification, and audit trail.
 
 ---
 
-## Key Concepts
+### POST `/api/v1/tickets/{id}/messages` — Send Follow-Up
 
-### Pydantic Schemas (`schemas/ticket.py`)
+When a customer sends a follow-up message:
 
-Schemas define the SHAPE of data. FastAPI uses them for:
-- **Validation**: `customer_email` must be a valid email, `subject` min 5 chars
-- **Documentation**: Swagger UI generated automatically at `/docs`
-- **Serialization**: Python objects → JSON responses
+```
+1. Message saved to database
+2. ALL previous messages loaded (conversation context)
+3. AI agent processes the new message WITH full conversation history
+4. AI response saved as new message
+5. Updated ticket returned
+```
 
-### In-Memory Storage (Phase 3)
+**Key detail:** The conversation history is passed to the LLM so it understands the full context. The AI doesn't just answer the latest message in isolation.
 
-Currently, tickets are stored in a Python dict:
+---
+
+### GET `/api/v1/tickets` — List Tickets
+
+Returns the user's tickets with optional filters:
+- `status` — filter by status (open, resolved, etc.)
+- `priority` — filter by priority (low, medium, high, urgent)
+- `limit` / `offset` — pagination
+
+**Security:** Only shows tickets where `customer_email` matches the JWT email. Customers can never see other customers' tickets.
+
+---
+
+### PATCH `/api/v1/tickets/{id}/resolve` — Resolve Ticket
+
+Sets:
+- `status = "resolved"`
+- `resolved_at = datetime.now()`
+- `resolved_by = "customer"` or `"admin"` (from request body)
+- Adds a resolution message to the conversation
+
+---
+
+### GET `/api/v1/tickets/{id}/actions` — View Audit Trail
+
+Returns every AI decision as a list:
+```json
+[
+    {
+        "action_type": "classify_ticket",
+        "action_data": {"intent": "password_reset", "priority": "high"},
+        "reasoning": {"thought": "Customer mentions password reset multiple times..."},
+        "outcome": "success"
+    },
+    {
+        "action_type": "search_kb",
+        "action_data": {"query": "password reset", "results_count": 3},
+        "outcome": "success"
+    },
+    ...
+]
+```
+
+---
+
+## 5.3 Admin Endpoints (`api/routes/admin.py`)
+
+Require `role == "admin"` in the JWT (enforced by `require_admin` dependency).
+
+### GET `/api/v1/admin/conversations` — List All Conversations
+
+Admin version of ticket listing — sees ALL tickets across all customers.
+
+**Advanced filters:**
+- `status`, `priority`, `category` — standard filters
+- `email` — search by customer email
+- `date_from` / `date_to` — date range
+- `resolved_by` — filter by who resolved (ai_agent, admin, customer)
+- `sort` — sort by date, priority, or status
+
+### POST `/api/v1/admin/conversations/{id}/reply` — Reply as Agent
+
+Sends a message with `sender_type = "human_agent"`. No AI auto-reply is triggered.
+
+### PATCH `/api/v1/admin/conversations/{id}/resolve` — Admin Resolve
+
+Resolves any ticket with `resolved_by = "admin"`.
+
+---
+
+## 5.4 Analytics Endpoint (`api/routes/analytics.py`)
+
+### GET `/api/v1/analytics/dashboard`
+
+Returns aggregated metrics:
+```json
+{
+    "total_tickets": 150,
+    "by_status": {"resolved": 120, "open": 20, "escalated": 10},
+    "by_priority": {"low": 50, "medium": 60, "high": 30, "urgent": 10},
+    "by_category": {"account": 40, "billing": 35, "technical": 45, "general": 30},
+    "avg_resolution_time_minutes": 12.5
+}
+```
+
+---
+
+## 5.5 Pydantic Schemas (`api/schemas/`)
+
+### Request Models (Validation)
+
 ```python
-_tickets_store: dict[str, dict] = {}
+class CreateTicketRequest(BaseModel):
+    customer_email: EmailStr                    # Must be valid email
+    subject: str = Field(min_length=5, max_length=200)  # 5-200 chars
+    message: str = Field(min_length=10)         # At least 10 chars
+    channel: str = "web"                        # Default: web
 ```
 
-This means data disappears on server restart. Phase 4 will persist to Supabase.
-For development and testing, in-memory is perfect.
+If any validation fails, FastAPI returns a **422 Unprocessable Entity** with details:
+```json
+{
+    "detail": [
+        {
+            "loc": ["body", "subject"],
+            "msg": "String should have at least 5 characters",
+            "type": "string_too_short"
+        }
+    ]
+}
+```
 
-### Swagger UI
+### Response Models (Serialization)
 
-Once the server is running, visit:
-- **`http://localhost:8000/docs`** — Interactive API playground
-- **`http://localhost:8000/redoc`** — Clean API documentation
+```python
+class TicketResponse(BaseModel):
+    id: str
+    subject: str
+    status: str
+    priority: str
+    category: str | None
+    sentiment: str | None
+    created_at: datetime
+    resolved_at: datetime | None
 
-You can test ALL endpoints directly from the browser!
+class TicketDetailResponse(TicketResponse):
+    messages: list[MessageResponse]      # All conversation messages
+    actions: list[AgentActionResponse]   # AI audit trail
+    customer_email: str
+```
 
 ---
 
-## How to Test
+## 5.6 Authentication (`api/deps/auth.py`)
 
-```bash
-# 1. Start the server
-cd "d:\OneDrive - iitr.ac.in\Projects\Customer Support Agent"
-.venv\Scripts\activate
-uvicorn src.main:app --reload
+### JWT Verification Flow
 
-# 2. Open Swagger UI
-# Go to http://localhost:8000/docs in your browser
-
-# 3. Try "POST /api/v1/tickets" → click "Try it out"
-# Enter a ticket and see the AI response!
+```
+Frontend includes:  Authorization: Bearer eyJhbGci...
+                        ↓
+get_current_user() called by FastAPI Depends()
+                        ↓
+Strip "Bearer " prefix → extract raw JWT
+                        ↓
+Fetch public key from Supabase JWKS endpoint
+    https://<project>.supabase.co/auth/v1/.well-known/jwks.json
+                        ↓
+Verify JWT signature (ES256/EdDSA/HS256), check expiration
+                        ↓
+Extract: user_id (sub), email, role (from user_metadata)
+                        ↓
+Return CurrentUser(id=..., email=..., role=...)
 ```
 
----
+### Why JWKS Instead of a Shared Secret?
 
-## What's Next?
-
-- **Phase 4**: Persist tickets to Supabase database
-- **Phase 5**: WebSocket for real-time updates
-- **Phase 6**: Frontend UI
+Supabase migrated from HS256 (symmetric shared secret) to ES256 (asymmetric ECC).
+With JWKS:
+- Supabase signs JWTs with a **private key** (only Supabase has it)
+- We verify JWTs with the **public key** (fetched from JWKS endpoint)
+- No shared secret needed — more secure, rotatable

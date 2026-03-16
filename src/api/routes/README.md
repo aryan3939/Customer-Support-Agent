@@ -1,43 +1,61 @@
-# `routes/` — API Endpoint Handlers
+# `src/api/routes/` — Route Handlers
 
-Each file defines a **FastAPI APIRouter** with endpoints for one resource.
-Routes are the "glue" between HTTP requests and backend logic.
+Each file defines a group of related API endpoints. Routes are registered
+with FastAPI's `APIRouter` and mounted on the main app in `main.py`.
 
 ## Files
 
-### `tickets.py` — Ticket Management (6 endpoints)
-The main API — handles the full ticket lifecycle:
+### `tickets.py` — Customer Ticket Endpoints (20KB, largest file)
 
-| Method | Path | What It Does |
-|--------|------|-------------|
-| `POST` | `/api/v1/tickets` | Create a ticket → run AI agent → persist to Supabase |
-| `GET` | `/api/v1/tickets` | List tickets with filters (status, priority, category, email) + pagination |
-| `GET` | `/api/v1/tickets/{id}` | Get ticket details with messages + AI actions |
-| `POST` | `/api/v1/tickets/{id}/messages` | Send a follow-up message → AI re-processes automatically |
-| `PATCH` | `/api/v1/tickets/{id}/status` | Update ticket status (open, resolved, closed) |
-| `GET` | `/api/v1/tickets/{id}/actions` | Get the AI audit trail (every action the agent took) |
+The main ticket CRUD + AI processing endpoints. Only shows tickets
+belonging to the authenticated user (filtered by email from JWT).
 
-**Key pattern**: Every endpoint receives `db: AsyncSession = Depends(get_db_session)`,
-which injects a database session that auto-commits on success or rolls back on error.
+| Endpoint | Method | What It Does |
+|----------|--------|-------------|
+| `/api/v1/tickets` | `POST` | **Creates a ticket** → runs the entire LangGraph AI pipeline → returns classification + AI response + audit trail |
+| `/api/v1/tickets` | `GET` | Lists the user's tickets with filters (`status`, `priority`, `limit`, `offset`) |
+| `/api/v1/tickets/{id}` | `GET` | Gets full ticket detail — all messages, all AI actions |
+| `/api/v1/tickets/{id}/messages` | `POST` | Sends a follow-up message — if `sender_type == "customer"`, the AI auto-replies using full conversation context |
+| `/api/v1/tickets/{id}/status` | `PATCH` | Updates ticket status (`new`, `open`, `resolved`, `closed`, `escalated`) |
+| `/api/v1/tickets/{id}/resolve` | `PATCH` | Resolves a ticket — sets `resolved_at`, `resolved_by`, logs action |
+| `/api/v1/tickets/{id}/actions` | `GET` | Returns the AI's audit trail — every decision it made with reasoning |
 
-### `analytics.py` — Dashboard Metrics (1 endpoint)
-| Method | Path | What It Does |
-|--------|------|-------------|
-| `GET` | `/api/v1/analytics/dashboard` | Aggregate metrics: total/open/resolved/escalated counts, resolution rate, breakdowns |
+**Important constant:** `AI_AGENT_UUID` — a hardcoded UUID for the AI agent record in the `agents` table. Used when logging `agent_actions`.
 
-Queries all tickets from Supabase and passes them to `compute_dashboard_metrics()`.
+---
 
-### `webhooks.py` — External Integrations (1 endpoint)
-| Method | Path | What It Does |
-|--------|------|-------------|
-| `POST` | `/api/v1/webhooks/email` | Receive incoming emails (from SendGrid/SES) → auto-create tickets |
+### `admin.py` — Admin Panel Endpoints (15KB)
 
-Maps email fields (`from`, `subject`, `body`) to a `CreateTicketRequest` and
-reuses the `create_ticket()` function.
+Admin-only endpoints that require `role == "admin"` in the JWT.
+Provides full conversation management across all customers.
 
-## How to Explain This
+| Endpoint | Method | What It Does |
+|----------|--------|-------------|
+| `/api/v1/admin/conversations` | `GET` | Lists ALL tickets with advanced filters (status, priority, category, email, date range, resolved_by, sort) |
+| `/api/v1/admin/conversations/{id}` | `GET` | Full conversation detail for any ticket |
+| `/api/v1/admin/conversations/{id}/reply` | `POST` | Sends a message as a human agent (sets `sender_type = "human_agent"`) |
+| `/api/v1/admin/conversations/{id}/resolve` | `PATCH` | Resolves any conversation as admin |
 
-> "Routes follow the **thin controller** pattern — they handle HTTP concerns
-> (parsing requests, returning responses, error codes) but delegate all logic
-> to the agent graph and repository layer. This means the same ticket creation
-> logic works whether triggered by the frontend, a webhook, or a CLI script."
+**Authorization:** Every admin route checks `current_user.role == "admin"` and returns 403 Forbidden otherwise.
+
+---
+
+### `analytics.py` — Dashboard Metrics (1.2KB)
+
+Single endpoint that returns aggregated statistics.
+
+| Endpoint | Method | What It Does |
+|----------|--------|-------------|
+| `/api/v1/analytics/dashboard` | `GET` | Returns ticket counts by status, priority, category + average resolution time |
+
+---
+
+### `webhooks.py` — External Integrations (1.8KB)
+
+Stub endpoints for receiving events from external services (email providers, Slack, etc.). Currently a placeholder for future integrations.
+
+---
+
+### `__init__.py` — Package Init
+
+Makes the `routes` folder importable.

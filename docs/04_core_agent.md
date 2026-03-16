@@ -1,268 +1,299 @@
-# Phase 2: Core AI Agent
+# 04 — Core Agent (LangGraph AI Workflow)
 
-## Why This Phase?
-
-Phase 1 built the house frame (server, database, config). Now we build the
-**brain** — the AI agent that actually processes support tickets.
-
-Without this phase, our app is just an empty shell. After this phase:
-- Tickets can be classified automatically
-- The AI searches a knowledge base for relevant answers
-- It generates helpful responses
-- It knows when to escalate to a human
-- Every action is logged for transparency
+The heart of the application — how the AI agent processes customer support
+tickets using a LangGraph state machine.
 
 ---
 
-## Architecture: The LangGraph Workflow
+## 4.1 What is LangGraph?
 
-```
-    ┌─────────────────────────────────────────────────────┐
-    │                   TICKET ARRIVES                     │
-    └──────────────────────┬──────────────────────────────┘
-                           ▼
-    ┌──────────────────────────────────────────────────────┐
-    │  CLASSIFY — What does the customer want?             │
-    │  → intent, category, priority, sentiment             │
-    └──────────────────────┬──────────────────────────────┘
-                           ▼
-                   ┌───────────────┐
-                   │  ESCALATE?    │
-                   │ urgent+angry? │
-                   │ low confidence│
-                   └───┬───────┬───┘
-               YES ←───┘       └───→ NO
-                ▼                      ▼
-    ┌───────────────┐    ┌──────────────────────────────┐
-    │   ESCALATE    │    │  SEARCH KB — find relevant    │
-    │ handoff to    │    │  articles from knowledge base │
-    │ human agent   │    └──────────────┬───────────────┘
-    └───────┬───────┘                   ▼
-            │           ┌──────────────────────────────┐
-            │           │  RESOLVE — generate response  │
-            │           │  using KB + classification     │
-            │           └──────────────┬───────────────┘
-            │                          ▼
-            │           ┌──────────────────────────────┐
-            │           │  VALIDATE — QA check the      │
-            │    ┌──────│  response before sending      │
-            │    │      └──────────────┬───────────────┘
-            │    │                 ┌───┴───┐
-            │    │          PASS ←─┘       └─→ FAIL
-            │    │           ▼                   ▼
-            │    │    ┌────────────┐      (retry or escalate)
-            │    └────│  RESPOND   │
-            │         └─────┬──────┘
-            ▼               ▼
-    ┌──────────────────────────────────────────────────────┐
-    │                      DONE                             │
-    └──────────────────────────────────────────────────────┘
+LangGraph is a framework for building **stateful, multi-step AI workflows** as
+directed graphs (flowcharts). It's built on top of LangChain and adds:
+
+- **State management** — a shared data object flows through every step
+- **Conditional branching** — different paths based on context (e.g., escalate if urgent)
+- **Quality gates** — validate responses before sending
+- **Full traceability** — every step is logged for debugging
+
+### How It Differs from Simple LLM Calls
+
+```python
+# ❌ Simple approach — one LLM call, no control
+response = llm.invoke("Answer this customer: " + message)
+
+# ✅ LangGraph approach — multi-step pipeline with validation
+# 1. Classify the ticket (intent, priority, sentiment)
+# 2. Search knowledge base for relevant articles
+# 3. Generate response using KB context
+# 4. Validate response quality
+# 5. Finalize or escalate
 ```
 
 ---
 
-## Files Created
+## 4.2 The State Machine
+
+### Graph Definition (`src/agents/graph.py`)
 
 ```
-src/agents/
-├── __init__.py          ← Re-exports process_ticket()
-├── state.py             ← TicketState: data shape for the workflow
-├── llm.py               ← LLM factory (Google/Groq)
-├── graph.py             ← Main LangGraph workflow definition
-├── nodes/
-│   ├── classifier.py    ← Classifies tickets (intent, priority, etc.)
-│   ├── resolver.py      ← Generates AI responses
-│   ├── escalator.py     ← Handles human agent handoff
-│   └── validator.py     ← QA-checks responses before sending
-├── edges/
-│   └── conditions.py    ← Routing logic between nodes
-└──
+     START
+       │
+       ▼
+ ┌──────────┐
+ │ CLASSIFY  │ ← LLM classifies intent, priority, sentiment, category
+ └────┬─────┘
+      │
+ should_escalate_after_classify?
+      ├── YES → [ESCALATE] → END
+      │
+      ▼ NO
+ ┌───────────┐
+ │ KB SEARCH  │ ← Embeds query → pgvector similarity search
+ └────┬──────┘
+      │
+      ▼
+ ┌──────────┐
+ │ RESOLVE   │ ← LLM generates response using KB context
+ └────┬─────┘
+      │
+      ▼
+ ┌──────────┐
+ │ VALIDATE  │ ← LLM quality-checks the response
+ └────┬─────┘
+      │
+ should_escalate_after_validate?
+      ├── YES → [ESCALATE] → END
+      │
+      ▼ NO
+ ┌──────────┐
+ │ FINALIZE  │ ← Marks ticket as resolved
+ └──────────┘
+      │
+     END
+```
 
-src/tools/
-├── __init__.py
-└── knowledge_base.py    ← KB search (sample articles for now)
+### How the Graph Is Built
+
+```python
+def build_graph():
+    graph = StateGraph(TicketState)
+
+    # Add nodes (steps)
+    graph.add_node("classify", classify_ticket)
+    graph.add_node("kb_search", search_knowledge_base)
+    graph.add_node("resolve", generate_response)
+    graph.add_node("validate", validate_response)
+    graph.add_node("escalate", escalate_ticket)
+    graph.add_node("finalize", _finalize_response)
+
+    # Set entry point
+    graph.set_entry_point("classify")
+
+    # Add conditional edges (routing decisions)
+    graph.add_conditional_edges(
+        "classify",
+        should_escalate_after_classify,
+        {"escalate": "escalate", "continue": "kb_search"},
+    )
+
+    # Add fixed edges
+    graph.add_edge("kb_search", "resolve")
+    graph.add_edge("resolve", "validate")
+
+    graph.add_conditional_edges(
+        "validate",
+        should_escalate_after_validate,
+        {"escalate": "escalate", "finalize": "finalize"},
+    )
+
+    graph.add_edge("escalate", END)
+    graph.add_edge("finalize", END)
+
+    return graph
 ```
 
 ---
 
-## File-by-File Breakdown
+## 4.3 State Schema (`src/agents/state.py`)
 
-### `state.py` — The Data Schema
-
-LangGraph is a state machine. State flows through every node:
+The `TicketState` is a **TypedDict** that flows through every node:
 
 ```python
 class TicketState(TypedDict, total=False):
-    # Input
+    # INPUT — set when ticket enters the graph
     ticket_id: str
+    customer_email: str
     subject: str
     message: str
-    
-    # Classification (set by classifier)
-    intent: str        # "password_reset", "billing_inquiry"
-    category: str      # "account", "billing", "technical"
-    priority: str      # "low", "medium", "high", "urgent"
-    sentiment: str     # "positive", "neutral", "negative", "angry"
-    
-    # Context (set by KB search)
-    kb_results: list[dict]
-    
-    # Response (set by resolver/validator)
+    channel: str
+
+    # CLASSIFICATION — set by classifier node
+    intent: str          # "password_reset", "billing_inquiry", etc.
+    category: str        # "account", "billing", "technical"
+    priority: str        # "low", "medium", "high", "urgent"
+    sentiment: str       # "positive", "neutral", "negative", "angry"
+    confidence: float    # 0.0 to 1.0
+
+    # CONTEXT — set by enrichment nodes
+    kb_results: list[dict]      # Matching KB articles
+    customer_history: dict      # Past tickets, account info
+
+    # PROCESSING — internal tracking
+    current_node: str
+    attempts: int
+    needs_escalation: bool
+    escalation_reason: str
+
+    # RESPONSE — generated by resolver
     draft_response: str
     final_response: str
-    
-    # Audit trail
+
+    # AUDIT — action log
     actions_taken: list[dict]
 ```
 
-`total=False` means nodes only return the fields they update — LangGraph merges partial updates automatically.
+**Why `total=False`?** Each node only returns the fields it updates. LangGraph
+merges partial updates into the full state. Without `total=False`, every node
+would need to return ALL fields — even ones it didn't change.
 
 ---
 
-### `llm.py` — LLM Factory
+## 4.4 Nodes (Pipeline Steps)
 
-One function that returns the right LLM based on your `.env`:
+### Classifier Node (`agents/nodes/classifier.py`)
+
+**Purpose:** Analyze the customer's message and classify it.
+
+**How it works:**
+1. Constructs a detailed prompt asking the LLM to classify the ticket
+2. Uses `llm.with_structured_output(ClassificationResult)` — forces the LLM to return a validated Pydantic object
+3. Returns classification fields to the state
 
 ```python
-llm = get_llm()  # Returns Google Gemini or Groq based on LLM_PROVIDER
+# Simplified flow:
+prompt = f"""Classify this support ticket:
+Subject: {state['subject']}
+Message: {state['message']}
+Classify: intent, category, priority, sentiment, confidence"""
+
+result = await structured_llm.ainvoke(prompt)
+# result = ClassificationResult(intent="password_reset", priority="high", ...)
+
+return {
+    "intent": result.intent,
+    "priority": result.priority,
+    "sentiment": result.sentiment,
+    "category": result.category,
+    "confidence": result.confidence,
+}
 ```
 
-Switch providers by changing one line in `.env`. No code changes needed!
+### KB Searcher Node (`agents/nodes/kb_searcher.py`)
+
+**Purpose:** Find relevant knowledge base articles using vector similarity search.
+
+1. Takes the subject and message from state
+2. Calls the KB search tool (which embeds the query and searches pgvector)
+3. Returns the top matching articles as `kb_results`
+
+### Resolver Node (`agents/nodes/resolver.py`)
+
+**Purpose:** Generate the AI's response to the customer.
+
+Uses:
+- The original message (what the customer asked)
+- Classification data (intent, sentiment — adjusts tone)
+- KB results (real articles to reference — prevents hallucination)
+- Conversation history (for follow-up messages)
+
+### Validator Node (`agents/nodes/validator.py`)
+
+**Purpose:** Quality-check the generated response.
+
+A second LLM call that reviews the draft:
+- **Accuracy** — does it align with KB articles?
+- **Helpfulness** — does it answer the question?
+- **Tone** — appropriate for the customer's sentiment?
+- **Completeness** — all parts of the question addressed?
+
+If approved → promoted to `final_response`
+If rejected → `needs_escalation = True`
+
+### Escalator Node (`agents/nodes/escalator.py`)
+
+**Purpose:** Route the ticket to a human agent.
+
+Triggered when:
+- Priority is `urgent`
+- Sentiment is `angry`
+- Confidence is below threshold (default 0.7)
+- Validator rejects the response
 
 ---
 
-### `classifier.py` — Ticket Classification
+## 4.5 Conditional Edges (`agents/edges/conditions.py`)
 
-The FIRST node. Uses a structured prompt to classify tickets:
-
-```
-Input: "I can't reset my password, tried 3 times!"
-Output: {intent: "password_reset", priority: "high", sentiment: "negative", confidence: 0.92}
-```
-
-The prompt asks the LLM to return JSON with specific fields. Error handling
-gracefully falls back to defaults if the LLM returns malformed JSON.
-
----
-
-### `knowledge_base.py` — KB Search
-
-Searches for relevant articles to ground the AI's response:
-
-```
-Input: "password reset" (from ticket)
-Output: [{article: "Password Reset Guide", text: "Step 1: Go to login..."}]
-```
-
-**Phase 2**: Uses keyword matching against 5 sample articles.
-**Phase 3**: Will use pgvector similarity search with real embeddings.
-
-The 5 sample articles cover: password reset, billing/refunds, account setup,
-troubleshooting, and shipping.
-
----
-
-### `resolver.py` — Response Generation
-
-Constructs a detailed prompt with ALL context:
-- Customer's message
-- Classification results
-- KB article matches
-- Customer history
-
-Then asks the LLM to generate an empathetic, step-by-step response.
-
----
-
-### `validator.py` — Quality Assurance
-
-Checks responses before sending:
-1. Not empty
-2. Minimum 50 characters
-3. Doesn't contain uncertainty markers ("I'm not sure", "I cannot")
-
-If checks fail 3 times → escalate instead of sending a bad response.
-
----
-
-### `escalator.py` — Human Handoff
-
-When the AI can't handle a ticket, this node:
-1. Determines why (urgent, angry, low confidence, max attempts)
-2. Generates a handoff summary via LLM
-3. Sets a customer-facing acknowledgment message
-
----
-
-### `conditions.py` — Routing Logic
-
-Two routing functions:
-- `should_escalate_after_classify`: urgent+angry OR low confidence → escalate
-- `should_escalate_after_validate`: pass → respond, fail → retry/escalate
-
----
-
-### `graph.py` — The Main Workflow
-
-Assembles everything into a LangGraph:
+Functions that decide which node runs next:
 
 ```python
-graph = StateGraph(TicketState)
-graph.add_node("classify", classify_ticket)
-graph.add_node("search_kb", search_knowledge_base)
-graph.add_node("resolve", generate_response)
-graph.add_node("validate", validate_response)
-graph.add_node("escalate", escalate_ticket)
-graph.add_node("respond", _finalize_response)
-
-graph.set_entry_point("classify")
-graph.add_conditional_edges("classify", should_escalate_after_classify, {...})
-graph.add_edge("search_kb", "resolve")
-graph.add_edge("resolve", "validate")
-graph.add_conditional_edges("validate", should_escalate_after_validate, {...})
+def should_escalate_after_classify(state: TicketState) -> str:
+    if state["priority"] == "urgent":        return "escalate"
+    if state["sentiment"] == "angry":        return "escalate"
+    if state["confidence"] < 0.7:            return "escalate"
+    if state.get("needs_escalation"):        return "escalate"
+    return "continue"
 ```
 
-Public API:
+---
+
+## 4.6 Structured Output (`agents/models.py`)
+
+Instead of parsing raw JSON from the LLM (fragile, error-prone), we use
+Pydantic models with `llm.with_structured_output()`:
+
 ```python
+class ClassificationResult(BaseModel):
+    intent: Literal["password_reset", "billing_inquiry", ...]
+    priority: Literal["low", "medium", "high", "urgent"]
+    sentiment: Literal["positive", "neutral", "negative", "angry"]
+    confidence: float = Field(ge=0.0, le=1.0)
+
+# LangChain binds the model to the LLM call:
+structured_llm = llm.with_structured_output(ClassificationResult)
+result = await structured_llm.ainvoke(prompt)  # Returns a validated Pydantic object
+```
+
+---
+
+## 4.7 LLM Factory (`agents/llm.py`)
+
+Supports multiple LLM providers through a factory pattern:
+
+```python
+def get_llm() -> BaseChatModel:
+    if settings.LLM_PROVIDER == "google":
+        return ChatGoogleGenerativeAI(model="gemini-2.0-flash", ...)
+    elif settings.LLM_PROVIDER == "groq":
+        return ChatGroq(model="llama-3.1-70b-versatile", ...)
+```
+
+**Why a factory?** Both providers implement `BaseChatModel`, so downstream code doesn't care which one is used. Switch providers by changing one `.env` variable — no code changes.
+
+---
+
+## 4.8 Entry Point
+
+```python
+# The public API — called by route handlers
 result = await process_ticket(
     ticket_id="abc-123",
     customer_email="user@example.com",
     subject="Can't reset password",
-    message="I've tried 3 times...",
+    message="I've tried 3 times and no email arrives",
+    channel="web",
 )
+
+# result contains everything the graph produced:
+# intent, priority, sentiment, category, confidence,
+# kb_results, draft_response, final_response, actions_taken
 ```
-
----
-
-## How to Test
-
-### Quick Test Script
-
-Run the test script to process a sample ticket:
-
-```bash
-# Activate venv
-.venv\Scripts\activate
-
-# Run the test
-python scripts/test_agent.py
-```
-
-### What to Expect
-
-The test script sends a sample ticket through the graph. You should see:
-1. Structured log output showing each node executing
-2. Classification results (intent, priority, sentiment)
-3. KB search results
-4. The AI-generated response
-5. Complete audit trail
-
----
-
-## What's Next?
-
-With the agent core running, future phases add:
-1. **API Routes** — REST endpoints to submit/manage tickets
-2. **Database Integration** — Persist tickets and actions
-3. **Vector Search** — Replace keyword KB search with pgvector
-4. **More Tools** — Email, Slack notifications, CRM lookups

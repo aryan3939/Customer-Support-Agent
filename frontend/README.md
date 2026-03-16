@@ -1,61 +1,91 @@
-# `frontend/` — Next.js Dashboard
+# `frontend/` — Next.js 15 Frontend
 
-The customer support dashboard built with **Next.js 14** (App Router),
-**TypeScript**, and **Tailwind CSS**. Provides a visual interface for
-managing tickets, viewing AI responses, and monitoring analytics.
+The customer-facing web application built with **Next.js 15**, **TypeScript**,
+and **Tailwind CSS**. Provides the login page, customer dashboard, ticket
+detail/chat view, admin panel, and analytics dashboard.
 
-## Pages
+## Tech Stack
 
-| Route | File | What It Shows |
-|-------|------|--------------|
-| `/` | `app/page.tsx` | **Ticket List** — table of all tickets + "New Ticket" dialog form |
-| `/tickets/[id]` | `app/tickets/[id]/page.tsx` | **Ticket Detail** — chat thread with AI, classification sidebar, audit trail |
-| `/analytics` | `app/analytics/page.tsx` | **Dashboard** — metric cards (total, open, resolved, escalated) + breakdowns |
+| Technology | Purpose |
+|-----------|---------|
+| Next.js 15 | React framework with App Router (file-system routing) |
+| TypeScript | Type-safe JavaScript |
+| Tailwind CSS | Utility-first CSS framework |
+| Supabase Auth | Client-side authentication (sign-up, sign-in, JWT management) |
 
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `src/lib/api.ts` | **Typed API client** — all `fetch()` calls to the backend with TypeScript interfaces matching Pydantic schemas |
-| `src/app/layout.tsx` | Root layout — sidebar navigation, dark theme, Google Fonts (Inter) |
-| `src/app/globals.css` | CSS variables for the dark color theme |
-| `next.config.ts` | **Critical** — proxies `/api/v1/*` requests to `http://localhost:8000` so frontend and backend can run on different ports |
-| `package.json` | Dependencies: next, react, tailwindcss |
-
-## API Proxy
-
-The frontend runs on `:3000`, the backend on `:8000`. Instead of dealing with
-CORS for every request, `next.config.ts` proxies all `/api/v1/*` calls:
+## Folder Structure
 
 ```
-Browser → localhost:3000/api/v1/tickets → (proxy) → localhost:8000/api/v1/tickets
+frontend/
+├── src/
+│   ├── app/                    # Next.js App Router (pages)
+│   │   ├── layout.tsx          # Root layout — wraps all pages, auth guard
+│   │   ├── page.tsx            # Dashboard — ticket list + create ticket form
+│   │   ├── login/
+│   │   │   └── page.tsx        # Login/Sign-up page (Supabase Auth)
+│   │   ├── tickets/
+│   │   │   └── [id]/
+│   │   │       └── page.tsx    # Ticket detail — chat view, resolve, send messages
+│   │   ├── admin/
+│   │   │   └── page.tsx        # Admin panel — all conversations, reply as agent
+│   │   ├── analytics/
+│   │   │   └── page.tsx        # Analytics dashboard — charts, metrics
+│   │   └── globals.css         # Global styles
+│   │
+│   ├── hooks/
+│   │   └── useAuth.ts          # React hook for Supabase authentication
+│   │
+│   └── lib/
+│       ├── api.ts              # Backend API client (axios-based)
+│       └── supabase.ts         # Supabase browser client setup
+│
+├── public/                     # Static assets
+├── next.config.ts              # Next.js configuration
+├── tailwind.config.ts          # Tailwind CSS configuration
+├── tsconfig.json               # TypeScript configuration
+├── package.json                # Node.js dependencies
+└── .env.local                  # Environment variables (Supabase URL + key)
 ```
 
-This means the frontend code just calls `/api/v1/tickets` without knowing
-about the backend port.
+## Key Files Explained
+
+### `src/hooks/useAuth.ts` — Authentication Hook
+
+A custom React hook that manages the entire auth lifecycle:
+- Listens for Supabase auth state changes (login, logout, token refresh)
+- Extracts user role from JWT metadata (`customer` vs `admin`)
+- Provides `user`, `role`, `loading`, and `signOut` to any component
+- Redirects unauthenticated users to `/login`
+
+### `src/lib/api.ts` — Backend API Client
+
+Wraps all backend API calls in typed functions:
+```typescript
+api.getTickets()                    // GET /api/v1/tickets
+api.createTicket(data)              // POST /api/v1/tickets
+api.getTicket(id)                   // GET /api/v1/tickets/{id}
+api.sendMessage(ticketId, content)  // POST /api/v1/tickets/{id}/messages
+api.resolveTicket(id)               // PATCH /api/v1/tickets/{id}/resolve
+```
+Automatically attaches the JWT token to every request.
+
+### `src/lib/supabase.ts` — Supabase Client
+
+Creates the Supabase browser client using `NEXT_PUBLIC_SUPABASE_URL`
+and `NEXT_PUBLIC_SUPABASE_ANON_KEY` environment variables.
 
 ## How to Run
 
 ```bash
 cd frontend
-npm install
-npm run dev
-# Opens at http://localhost:3000
+npm install          # Install dependencies
+npm run dev          # Start dev server at http://localhost:3000
 ```
 
-## Design
+## Environment Variables
 
-- **Dark theme** with custom CSS variables
-- **Responsive layout** with sidebar navigation
-- **Chat interface** for ticket conversations
-- **Status badges** with color coding (green=resolved, yellow=open, red=escalated)
-- **Real-time AI classification** visible in the sidebar
-
-## How to Explain This
-
-> "The frontend is a Next.js dashboard that communicates with the FastAPI
-> backend through an API proxy. The typed client in `api.ts` mirrors the
-> backend Pydantic schemas exactly, giving end-to-end type safety.
-> The chat interface shows the AI's response alongside a classification
-> sidebar (intent, priority, sentiment) and a full audit trail of every
-> action the agent took."
+Create `frontend/.env.local`:
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGci...your-anon-key
+```

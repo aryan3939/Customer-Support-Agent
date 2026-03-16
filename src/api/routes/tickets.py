@@ -8,8 +8,10 @@ ENDPOINTS:
     GET    /api/v1/tickets/{id}         → Get ticket details
     POST   /api/v1/tickets/{id}/messages → Add follow-up message
     PATCH  /api/v1/tickets/{id}/status  → Update ticket status
+    PATCH  /api/v1/tickets/{id}/resolve → Resolve a ticket
     GET    /api/v1/tickets/{id}/actions → Get audit trail
 
+All routes are protected by Supabase JWT authentication.
 All routes persist to Supabase via SQLAlchemy async sessions.
 """
 
@@ -17,7 +19,10 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.api.deps.auth import CurrentUser, get_current_user
 
 from src.agents.graph import process_ticket
 from src.api.schemas.ticket import (
@@ -84,6 +89,7 @@ AI_AGENT = AgentInfo(
 )
 async def create_ticket(
     request: CreateTicketRequest,
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
     """
@@ -215,9 +221,13 @@ async def list_tickets(
     customer_email: str | None = Query(None, description="Filter by email"),
     limit: int = Query(20, ge=1, le=100, description="Results per page"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
     """List all tickets with optional filtering and pagination."""
+    # Customers only see their own tickets; admins see everything
+    if current_user.role != "admin":
+        customer_email = current_user.email
     
     tickets, total = await repo_list_tickets(
         db,
@@ -264,6 +274,7 @@ async def list_tickets(
 )
 async def get_ticket(
     ticket_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Get detailed ticket info including messages and actions."""
@@ -276,6 +287,10 @@ async def get_ticket(
     ticket = await get_ticket_by_id(db, tid)
     if not ticket:
         raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+    
+    # Customers can only view their own tickets
+    if current_user.role != "admin" and ticket.customer and ticket.customer.email != current_user.email:
+        raise HTTPException(status_code=403, detail="You can only view your own tickets")
     
     messages = await get_messages_for_ticket(db, tid)
     actions = await get_actions_for_ticket(db, tid)
@@ -331,6 +346,7 @@ async def get_ticket(
 async def add_message(
     ticket_id: str,
     request: AddMessageRequest,
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Add a follow-up message to an existing ticket."""
@@ -413,6 +429,7 @@ async def add_message(
 async def update_ticket_status(
     ticket_id: str,
     request: UpdateTicketStatusRequest,
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Update a ticket's status."""
@@ -447,6 +464,84 @@ async def update_ticket_status(
 
 
 # =============================================================================
+# PATCH /api/v1/tickets/{id}/resolve — Resolve a ticket
+# =============================================================================
+
+class ResolveTicketRequest(BaseModel):
+    resolved_by: str = "customer"  # "customer" or "admin"
+
+@router.patch(
+    "/{ticket_id}/resolve",
+    response_model=TicketResponse,
+    summary="Resolve a ticket",
+    description="Mark a ticket as resolved. Customers can resolve their own tickets, admins can resolve any.",
+)
+async def resolve_ticket(
+    ticket_id: str,
+    request: ResolveTicketRequest | None = None,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Resolve a ticket."""
+    try:
+        tid = uuid.UUID(ticket_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ticket ID format")
+    
+    ticket = await get_ticket_by_id(db, tid)
+    if not ticket:
+        raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
+    
+    # Determine who is resolving
+    resolved_by = "admin" if current_user.role == "admin" else "customer"
+    if request and request.resolved_by:
+        resolved_by = request.resolved_by
+    
+    # Customers can only resolve their own tickets
+    if current_user.role != "admin" and ticket.customer and ticket.customer.email != current_user.email:
+        raise HTTPException(status_code=403, detail="You can only resolve your own tickets")
+    
+    now = datetime.now(timezone.utc)
+    ticket.status = "resolved"
+    ticket.resolved_at = now
+    ticket.resolved_by = resolved_by
+    ticket.updated_at = now
+    await db.flush()
+    
+    # Record in audit trail
+    await add_agent_action(
+        db,
+        ticket_id=tid,
+        agent_id=AI_AGENT_UUID,
+        action_type="resolve_ticket",
+        action_data={"resolved_by": resolved_by, "resolved_by_user": current_user.email},
+        reasoning=f"Ticket resolved by {resolved_by}",
+        outcome="success",
+    )
+    
+    logger.info(
+        "ticket_resolved",
+        ticket_id=ticket_id,
+        resolved_by=resolved_by,
+        user=current_user.email,
+    )
+    
+    return TicketResponse(
+        id=str(ticket.id),
+        customer_email=ticket.customer.email if ticket.customer else "unknown",
+        subject=ticket.subject,
+        status=ticket.status,
+        priority=ticket.priority,
+        category=ticket.category,
+        sentiment=ticket.ai_context.get("sentiment") if ticket.ai_context else None,
+        assigned_to=AI_AGENT if ticket.assigned_agent_id else None,
+        created_at=ticket.created_at,
+        updated_at=ticket.updated_at,
+        resolved_at=ticket.resolved_at,
+    )
+
+
+# =============================================================================
 # GET /api/v1/tickets/{id}/actions — Get audit trail
 # =============================================================================
 
@@ -457,6 +552,7 @@ async def update_ticket_status(
 )
 async def get_ticket_actions(
     ticket_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
     """Get the complete audit trail for a ticket."""

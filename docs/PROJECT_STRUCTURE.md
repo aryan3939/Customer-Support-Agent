@@ -1,393 +1,300 @@
-# 🏗️ Project Structure — Complete Reference
+# 📂 Project Structure — File-by-File Explanation
 
-> **Customer Support Agent** — an AI-powered support ticket system built with
-> FastAPI, LangGraph, Supabase, and Next.js.
-
-This document explains **every file and folder** in the repository, how they
-connect, and why they exist.
-
----
-
-## High-Level Architecture
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                      FRONTEND (Next.js)                      │
-│  page.tsx → api.ts → /api/v1/tickets (proxy to backend)      │
-└─────────────────────────┬────────────────────────────────────┘
-                          │  HTTP / JSON
-┌─────────────────────────▼────────────────────────────────────┐
-│                   BACKEND (FastAPI + LangGraph)               │
-│                                                               │
-│  Routes (tickets.py, analytics.py, webhooks.py)               │
-│     ↓                                                         │
-│  AI Agent Graph (classify → search KB → resolve → validate)   │
-│     ↓                                                         │
-│  Repositories (ticket_repo.py, customer_repo.py)              │
-│     ↓                                                         │
-│  Supabase PostgreSQL (via SQLAlchemy asyncpg)                 │
-│                                                               │
-│  Observability: LangSmith tracing + structlog logging         │
-└──────────────────────────────────────────────────────────────┘
-```
+Every file in this project explained. Read this to understand what each file does and why it exists.
 
 ---
 
 ## Root Directory
 
-```
-Customer Support Agent/
-├── .env                  # Environment variables (API keys, DB URL) — NEVER commit
-├── .env.example          # Template showing all required/optional env vars
-├── .gitignore            # Git ignore rules
-├── README.md             # Quick-start README
-├── requirements.txt      # Python dependencies (pip install -r requirements.txt)
-├── pyproject.toml        # Project metadata, linting config, tool settings
-├── docker-compose.yml    # Docker setup for local Postgres + Redis (optional)
-├── alembic.ini           # Alembic migration config (references alembic/ folder)
-│
-├── src/                  # ★ Backend application code
-├── frontend/             # ★ Next.js frontend
-├── scripts/              # Utility scripts (testing)
-├── docs/                 # Documentation
-├── tests/                # Test directory (unit, integration, e2e)
-├── alembic/              # Database migration files
-└── venv/                 # Python virtual environment (not committed)
-```
+| File | Purpose |
+|------|---------|
+| `requirements.txt` | Python package dependencies — install via `pip install -r requirements.txt` |
+| `pyproject.toml` | Python project metadata, tool configurations (black, ruff, pytest) |
+| `.env.example` | Template for environment variables — copy to `.env` and fill in your keys |
+| `.env` | **YOUR secrets** — never commit this (gitignored) |
+| `.gitignore` | Files excluded from Git (venv, .env, __pycache__, etc.) |
+| `docker-compose.yml` | Optional Redis container for caching — `docker-compose up -d` |
+| `alembic.ini` | Alembic migration configuration — points to `alembic/env.py` |
 
 ---
 
 ## `src/` — Backend Application
 
-### `src/main.py`
-**The entry point.** Run with `uvicorn src.main:app --reload`.
+### `src/main.py` — Application Entry Point
 
-- Creates the FastAPI app with metadata (title, version, description)
-- Configures CORS middleware (allows frontend at `localhost:3000`)
-- Registers all route modules (tickets, analytics, webhooks)
-- **Lifespan**: connects to Supabase at startup (`init_db`), closes on shutdown (`close_db`)
-- Mounts the health check endpoint at `/health`
+**What it does:**
+- Creates the FastAPI application instance
+- Configures CORS middleware (allows frontend → backend communication)
+- Defines the lifespan handler (startup/shutdown logic)
+- Registers all route files
+- Provides `/` (root info) and `/health` (health check) endpoints
 
-### `src/config.py`
-**Centralized settings** loaded from `.env` via Pydantic Settings.
+**Startup sequence:**
+1. Initialize structured logging
+2. Connect to PostgreSQL (Supabase)
+3. Enable pgvector extension
+4. Create database tables (if they don't exist)
+5. Apply schema migrations (ALTER TABLE for missing columns)
+6. Load the sentence-transformers embedding model
+7. Register all API routes
 
-- Validates all env vars at import time — app crashes immediately if required vars are missing
-- Calls `load_dotenv()` so `LANGCHAIN_*` env vars are available in `os.environ` (LangSmith needs this)
-- Exposes a singleton `settings` object used everywhere
-- Key settings: `DATABASE_URL`, `LLM_PROVIDER`, `GOOGLE_API_KEY`/`GROQ_API_KEY`, `LANGCHAIN_*`
+---
 
-### `src/__init__.py`
-Package marker. Contains version string.
+### `src/config.py` — Configuration Management
+
+**What it does:**
+- Uses Pydantic Settings to read `.env` file values
+- Validates all configuration at startup (fails fast if keys are missing)
+- Provides typed access: `settings.DATABASE_URL`, `settings.LLM_MODEL`, etc.
+
+**Key configuration groups:**
+| Group | Variables |
+|-------|----------|
+| Database | `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_ANON_KEY` |
+| LLM | `LLM_PROVIDER`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `LLM_MODEL` |
+| Auth | `JWT_SECRET`, `SUPABASE_JWT_SECRET` |
+| Tracing | `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY` |
+| Behavior | `ENABLE_AUTO_RESOLUTION`, `MAX_AUTO_ATTEMPTS`, `ESCALATION_CONFIDENCE_THRESHOLD` |
 
 ---
 
 ## `src/agents/` — AI Agent (LangGraph)
 
-This is the **brain** of the application — a LangGraph state machine that
-processes each ticket through a multi-step AI workflow.
+The brain of the application. Implements the ticket processing workflow as a state machine.
 
-### `src/agents/graph.py`
-**The workflow definition.** Builds and compiles the LangGraph state machine.
+### `src/agents/graph.py` — The State Machine
 
-```
-START → classify_ticket → [escalate?] → search_knowledge_base
-                                              ↓
-                             generate_response → validate_response → [retry?] → finalize → END
-                                                        ↓
-                                                    escalate_ticket → END
-```
+**What it does:**
+- Defines the LangGraph workflow: `classify → kb_search → respond → validate → finalize`
+- Adds conditional edges for escalation decisions
+- Compiles the graph at import time (singleton)
+- Exports `process_ticket()` — the main entry point for the AI agent
 
-- `build_graph()` — creates the `StateGraph` with nodes and conditional edges
-- `compiled_graph` — singleton compiled graph (built once at import time)
-- `process_ticket()` — **public API** called by routes; creates initial state,
-  passes `RunnableConfig` with LangSmith thread_id/tags/metadata, invokes the graph
+### `src/agents/state.py` — Shared State Schema
 
-### `src/agents/state.py`
-**TypedDict** defining `TicketState` — the data structure that flows through the graph.
+**What it does:**
+- Defines `TicketState` — the TypedDict that flows through every node
+- Contains: ticket data, classification results, KB search results, AI response, audit actions
+- Each node reads from and writes to this shared state
 
-Fields include: `ticket_id`, `subject`, `message`, `intent`, `category`,
-`priority`, `sentiment`, `confidence`, `kb_results`, `draft_response`,
-`final_response`, `needs_escalation`, `actions_taken`, etc.
+### `src/agents/llm.py` — LLM Factory
 
-### `src/agents/llm.py`
-**LLM factory** — creates the right LangChain chat model based on `LLM_PROVIDER` setting.
+**What it does:**
+- Creates the right LangChain LLM client based on `LLM_PROVIDER` setting
+- Supports Google Gemini (`ChatGoogleGenerativeAI`) and Groq (`ChatGroq`)
+- Configures temperature, model name, and API key
 
-- `google` → `ChatGoogleGenerativeAI` (Gemini)
-- `groq` → `ChatGroq` (Llama, Mixtral, etc.)
-- Caches the instance after first creation
+### `src/agents/models.py` — AI Output Schemas
 
-### `src/agents/nodes/` — Graph Node Functions
+**What it does:**
+- Pydantic models for structured LLM outputs (e.g., `TicketClassification`)
+- Used with LangChain's `with_structured_output()` for reliable JSON parsing from LLM
 
-Each file is a single node in the LangGraph workflow:
+### `src/agents/nodes/` — Graph Nodes (Processing Steps)
 
 | File | Node | What It Does |
 |------|------|-------------|
-| `classifier.py` | `classify_ticket` | Sends ticket to LLM with classification prompt; extracts intent, category, priority, sentiment, confidence |
-| `resolver.py` | `generate_response` | Sends ticket + classification + KB results to LLM; generates customer-facing response |
-| `validator.py` | `validate_response` | Checks response quality (length, relevance, tone); approves or flags for retry |
-| `escalator.py` | `escalate_ticket` | Handles tickets that need human intervention; generates escalation reason and handoff message |
+| `classifier.py` | `classify` | LLM analyzes intent, priority, sentiment, category |
+| `kb_searcher.py` | `kb_search` | Embeds question → pgvector similarity search → returns articles |
+| `resolver.py` | `respond` | LLM generates response using KB context + ticket data |
+| `validator.py` | `validate` | LLM checks response quality — approve or escalate |
+| `escalator.py` | `escalate` | Marks ticket for human review, records reason |
 
-### `src/agents/edges/`
+### `src/agents/edges/conditions.py` — Routing Logic
 
-| File | What It Does |
-|------|-------------|
-| `conditions.py` | Conditional routing functions: `should_escalate_after_classify` (urgent+angry → escalate), `should_escalate_after_validate` (failed validation → retry or escalate) |
+**What it does:**
+- `should_escalate_after_classify()` — checks if priority is urgent or sentiment is negative
+- `should_escalate_after_validate()` — checks if validator flagged quality issues
 
 ---
 
 ## `src/api/` — REST API Layer
 
-### `src/api/routes/tickets.py`
-**The main API** — 6 endpoints for ticket CRUD, all persisted to Supabase:
+### `src/api/routes/tickets.py` — Customer Ticket Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/v1/tickets` | Create ticket → run AI agent → persist to DB |
-| `GET` | `/api/v1/tickets` | List tickets with filters (status, priority, category, email) |
-| `GET` | `/api/v1/tickets/{id}` | Get ticket details with messages + actions |
-| `POST` | `/api/v1/tickets/{id}/messages` | Add follow-up message → AI re-processes |
-| `PATCH` | `/api/v1/tickets/{id}/status` | Update ticket status (resolve, close, etc.) |
-| `GET` | `/api/v1/tickets/{id}/actions` | Get AI audit trail for a ticket |
+| Endpoint | Function | What It Does |
+|----------|----------|-------------|
+| `POST /api/v1/tickets` | `create_ticket` | Creates ticket, runs AI agent, returns response |
+| `GET /api/v1/tickets` | `list_tickets` | Lists user's tickets with filters + pagination |
+| `GET /api/v1/tickets/{id}` | `get_ticket` | Full ticket details with messages and actions |
+| `POST /api/v1/tickets/{id}/messages` | `add_message` | Follow-up message → triggers AI auto-reply |
+| `PATCH /api/v1/tickets/{id}/status` | `update_ticket_status` | Change ticket status |
+| `PATCH /api/v1/tickets/{id}/resolve` | `resolve_ticket` | Mark ticket as resolved |
+| `GET /api/v1/tickets/{id}/actions` | `get_ticket_actions` | View AI audit trail |
 
-Every route uses `Depends(get_db_session)` for async DB access.
+### `src/api/routes/admin.py` — Admin Endpoints
 
-### `src/api/routes/analytics.py`
-Dashboard metrics endpoint (`GET /api/v1/analytics/dashboard`).
-Queries all tickets from Supabase and computes: total/open/resolved/escalated counts,
-resolution rate, priority/category/sentiment breakdowns.
+| Endpoint | Function | What It Does |
+|----------|----------|-------------|
+| `GET /api/v1/admin/conversations` | `list_conversations` | All tickets with advanced filters |
+| `GET /api/v1/admin/conversations/{id}` | `get_conversation` | Conversation details |
+| `POST /api/v1/admin/conversations/{id}/reply` | `admin_reply` | Reply as human agent |
+| `PATCH /api/v1/admin/conversations/{id}/resolve` | `admin_resolve` | Admin-resolve ticket |
 
-### `src/api/routes/webhooks.py`
-Incoming email webhook endpoint (`POST /api/v1/webhooks/email`).
-Receives email data from external services (SendGrid, SES), maps it to a ticket,
-and reuses the `create_ticket()` function.
+### `src/api/routes/analytics.py` — Dashboard Metrics
 
-### `src/api/schemas/ticket.py`
-**Pydantic models** for request/response validation:
-`CreateTicketRequest`, `CreateTicketResponse`, `TicketResponse`,
-`TicketDetailResponse`, `TicketListResponse`, `MessageResponse`,
-`ActionResponse`, `AgentInfo`, `AddMessageRequest`, `UpdateTicketStatusRequest`.
+Provides aggregated statistics for the analytics dashboard.
 
-### `src/api/schemas/responses.py`
-Generic API response wrappers (`SuccessResponse`, `ErrorResponse`).
+### `src/api/routes/webhooks.py` — External Integrations
 
-### `src/api/middleware/`
+Stub endpoints for email/Slack webhook integrations (future use).
 
-| File | What It Does |
-|------|-------------|
-| `auth.py` | API key authentication middleware (placeholder — checks header) |
-| `rate_limit.py` | Simple in-memory rate limiter (placeholder — tracks requests per IP) |
+### `src/api/schemas/` — Request/Response Models
+
+| File | Purpose |
+|------|---------|
+| `ticket.py` | `CreateTicketRequest`, `TicketResponse`, `TicketDetailResponse`, etc. |
+
+### `src/api/deps/auth.py` — Authentication
+
+**What it does:**
+- `get_current_user()` — extracts and verifies JWT from `Authorization` header
+- Uses Supabase's JWKS endpoint to fetch public keys (supports ES256, EdDSA, HS256)
+- Caches JWKS keys (auto-refreshes)
+- `require_admin()` — requires `role: "admin"` in JWT claims
+
+### `src/api/middleware/error_handler.py` — Error Handling
+
+Catches unhandled exceptions and returns clean JSON error responses.
 
 ---
 
 ## `src/db/` — Database Layer
 
-### `src/db/models.py`
-**SQLAlchemy ORM models** — Python classes that map to Supabase tables:
+### `src/db/models.py` — SQLAlchemy ORM Models
 
-| Model | Table | Purpose |
-|-------|-------|---------|
-| `Customer` | `customers` | People who submit tickets (email, name, metadata) |
-| `Agent` | `agents` | AI and human support agents (name, email, is_ai, skills) |
-| `Ticket` | `tickets` | Core entity — status, priority, category, ai_context, timestamps |
-| `Message` | `messages` | Conversation thread within a ticket (sender_type, content) |
-| `AgentAction` | `agent_actions` | Audit trail — every AI action (classify, resolve, escalate) |
-| `Tag` | `tags` | Labels for ticket categorization |
-| `ticket_tags` | `ticket_tags` | Many-to-many junction table (Ticket ↔ Tag) |
-| `KnowledgeArticle` | `knowledge_articles` | KB articles for RAG search |
-| `KBEmbedding` | `kb_embeddings` | Vector chunks for similarity search (pgvector) |
+Defines all database tables as Python classes:
 
-### `src/db/session.py`
-**Engine + session management** for async PostgreSQL:
+| Model | Table | Key Fields |
+|-------|-------|-----------|
+| `Customer` | `customers` | id, email, name, metadata |
+| `Ticket` | `tickets` | id, customer_id, subject, status, priority, category, ai_context |
+| `Message` | `messages` | id, ticket_id, sender_type, content |
+| `Agent` | `agents` | id, name, is_ai, specialties |
+| `AgentAction` | `agent_actions` | id, agent_id, ticket_id, action_type, reasoning |
+| `KnowledgeBaseArticle` | `knowledge_base_articles` | id, title, content, embedding (VECTOR) |
 
-- Creates `create_async_engine` with PgBouncer-compatible settings (`statement_cache_size=0`)
-- `async_session_factory` — SQLAlchemy session factory
-- `get_db_session()` — FastAPI dependency (yields session, auto-commits/rollbacks)
-- `init_db()` — tests connection + runs `Base.metadata.create_all` (auto-creates tables)
-- `close_db()` — closes all connections at shutdown
+### `src/db/session.py` — Database Connection
 
-### `src/db/repositories/`
+**What it does:**
+- Creates async SQLAlchemy engine with `asyncpg` driver
+- Manages connection pooling (`pool_size=5`, `max_overflow=10`)
+- `init_db()` — creates tables, enables pgvector, applies schema fixes
+- `get_db_session()` — FastAPI dependency that provides a database session
 
-| File | What It Does |
-|------|-------------|
-| `customer_repo.py` | `get_or_create_customer()` — finds by email or creates new; `get_customer_by_email()`; `get_customer_by_id()` |
-| `ticket_repo.py` | Full CRUD: `create_ticket()`, `get_ticket_by_id()`, `list_tickets()`, `update_ticket_status()`, `add_message()`, `add_agent_action()`, `get_or_create_ai_agent()`, query helpers |
+### `src/db/repositories/` — Data Access
 
-### `src/db/__init__.py`
-Re-exports all models and `get_db_session` for convenient imports.
+| File | Purpose |
+|------|---------|
+| `ticket_repo.py` | CRUD for tickets, messages, agent actions |
+| `customer_repo.py` | Customer lookup and creation |
+
+**Pattern:** Routes call repositories → repositories execute SQL → return models. Routes never write raw SQL.
 
 ---
 
 ## `src/services/` — Business Logic
 
-| File | What It Does |
-|------|-------------|
-| `analytics_service.py` | `compute_dashboard_metrics()` — takes a list of ticket dicts and returns aggregated stats (counts, rates, breakdowns) |
+| File | Purpose |
+|------|---------|
+| `ticket_service.py` | Orchestrates ticket creation (create customer → create ticket → run AI) |
+| `embedding_service.py` | Singleton that loads `sentence-transformers` model and generates embeddings |
+| `analytics_service.py` | Queries for dashboard metrics (ticket counts, resolution rates) |
 
 ---
 
 ## `src/tools/` — Agent Tools
 
-These are tools the AI agent can use. Some are active, some are mock
-placeholders for future integration.
+LangChain tools that the AI agent can call during processing:
 
-| File | Status | What It Does |
-|------|--------|-------------|
-| `knowledge_base.py` | **Active** | In-memory KB search — stores sample articles, searches by keyword match. Used by the `search_knowledge_base` node |
-| `customer_service.py` | Mock | Returns mock customer profiles. In production: queries customer DB |
-| `external_apis.py` | Mock | Simulated integrations (order status, refunds, password reset, bug reports) |
-| `notifications.py` | Mock | Simulated Slack/email notifications |
-
----
-
-## `src/utils/` — Shared Utilities
-
-| File | What It Does |
-|------|-------------|
-| `logging.py` | Structured logging via `structlog`. JSON format in production, colored console in dev. `setup_logging()` initializes at startup; `get_logger()` creates per-module loggers |
-| `metrics.py` | Simple in-memory metrics tracking — counters and latency timers. `track_latency()` context manager, `get_metrics()` returns stats |
+| File | Tool | What It Does |
+|------|------|-------------|
+| `knowledge_base.py` | `search_kb` | Vector similarity search with keyword fallback |
+| `customer_service.py` | `get_customer` | Lookup customer info (purchase history, etc.) |
+| `external_apis.py` | `check_order` | Stub for external API calls (order status, etc.) |
+| `notifications.py` | `send_email` | Stub for email notifications |
 
 ---
 
-## `frontend/` — Next.js Dashboard
+## `src/utils/` — Utilities
 
-```
-frontend/
-├── package.json          # Dependencies (next, react, tailwindcss)
-├── next.config.ts        # Proxy rewrites: /api/v1/* → localhost:8000
-├── tsconfig.json         # TypeScript config
-├── postcss.config.mjs    # PostCSS + Tailwind setup
-│
-└── src/
-    ├── lib/
-    │   └── api.ts        # Typed API client — all fetch calls to the backend
-    │
-    └── app/
-        ├── globals.css   # Global styles (CSS variables for dark theme)
-        ├── layout.tsx    # Root layout — sidebar navigation, fonts, metadata
-        ├── page.tsx      # Home page — ticket list + "New Ticket" form
-        │
-        ├── tickets/
-        │   └── [id]/
-        │       └── page.tsx  # Ticket detail — chat thread + AI classification sidebar
-        │
-        └── analytics/
-            └── page.tsx  # Dashboard — metrics cards + charts
-```
+| File | Purpose |
+|------|---------|
+| `logging.py` | Configures `structlog` — colored console (dev) or JSON (prod) |
+| `metrics.py` | Simple performance counters for monitoring |
 
-### Key Frontend Files
+---
 
-| File | What It Does |
-|------|-------------|
-| `api.ts` | Typed wrappers around `fetch()` for all backend endpoints. Types match backend Pydantic schemas |
-| `page.tsx` (root) | Lists all tickets in a table, has a "New Ticket" dialog form |
-| `tickets/[id]/page.tsx` | Chat interface — shows message thread, AI classification sidebar, audit trail |
-| `analytics/page.tsx` | Dashboard with metric cards (total, open, resolved, escalated) and breakdowns |
-| `next.config.ts` | **Critical** — proxies `/api/v1/*` requests to `http://localhost:8000` so frontend and backend can run on different ports |
+## `frontend/` — Next.js Frontend
+
+### `frontend/src/app/` — Pages
+
+| File/Folder | Route | Purpose |
+|-------------|-------|---------|
+| `layout.tsx` | All routes | Root layout — auth guard, sidebar navigation |
+| `page.tsx` | `/` | Dashboard — ticket list + create ticket form |
+| `login/page.tsx` | `/login` | Supabase email/password login |
+| `tickets/[id]/page.tsx` | `/tickets/:id` | Ticket detail — chat messages + resolve/close |
+| `admin/` | `/admin` | Admin conversation list |
+| `admin/[id]/` | `/admin/:id` | Admin conversation detail + reply as agent |
+| `analytics/` | `/analytics` | Analytics dashboard |
+| `globals.css` | — | Tailwind CSS + custom CSS variables (dark theme) |
+
+### `frontend/src/hooks/`
+
+| File | Purpose |
+|------|---------|
+| `useAuth.ts` | React hook wrapping Supabase auth — provides `user`, `session`, `role`, `signOut` |
+
+### `frontend/src/lib/`
+
+| File | Purpose |
+|------|---------|
+| `api.ts` | Backend API client — `createTicket()`, `getTickets()`, `sendMessage()`, `resolveTicket()`, etc. |
+| `supabase.ts` | Supabase browser client singleton |
 
 ---
 
 ## `scripts/` — Utility Scripts
 
-| File | What It Does |
-|------|-------------|
-| `test_agent.py` | Standalone script to test the AI agent workflow without starting the server. Sends sample tickets and prints results |
-
----
-
-## `docs/` — Documentation
-
-| File | What It Covers |
-|------|---------------|
-| `01_environment_setup.md` | How to set up Python, Node.js, Supabase, and env vars |
-| `02_project_setup.md` | Project initialization, folder structure, dependency installs |
-| `03_database_models.md` | ERD and explanation of all SQLAlchemy models |
-| `04_core_agent.md` | LangGraph workflow design, node descriptions, edge conditions |
-| `05_api_routes.md` | REST API endpoint documentation |
-| `API_KEYS_SETUP.md` | Step-by-step guide to get Google/Groq/LangSmith/Supabase keys |
-| `HOW_TO_RUN.md` | Quick-start guide to run backend + frontend |
-| `PROJECT_STRUCTURE.md` | **This file** — comprehensive project map |
+| File | Purpose |
+|------|---------|
+| `seed_kb.py` | Populates the knowledge base with support articles + vector embeddings |
+| `test_agent.py` | Standalone test — processes a ticket through the AI agent |
 
 ---
 
 ## `alembic/` — Database Migrations
 
-| File | What It Does |
-|------|-------------|
-| `env.py` | Alembic configuration — connects to the DB, auto-detects model changes |
+| File | Purpose |
+|------|---------|
+| `env.py` | Alembic environment — configures async SQLAlchemy for migrations |
 | `script.py.mako` | Template for new migration files |
-| `versions/` | Migration scripts (currently empty — using `create_all` for schema) |
-
-> **Note:** Currently, tables are auto-created by `Base.metadata.create_all` in
-> `session.py`. For schema changes in production, use Alembic:
-> `alembic revision --autogenerate -m "description"` then `alembic upgrade head`.
+| `versions/` | Individual migration scripts (e.g., `add_resolved_by.py`) |
 
 ---
 
-## `tests/` — Test Skeleton
+## `tests/` — Test Suite (Scaffold)
 
 ```
 tests/
-├── conftest.py       # Shared pytest fixtures
-├── unit/             # Unit tests (individual functions)
-├── integration/      # Integration tests (DB + API)
-└── e2e/              # End-to-end tests (full workflow)
+├── e2e/          # End-to-end tests (empty — future)
+├── integration/  # Integration tests (empty — future)
+└── unit/         # Unit tests (empty — future)
 ```
 
-Currently a skeleton — tests can be added using `pytest` + `httpx` for API testing.
+Test directories are set up with `.gitkeep` placeholders. Tests can be added using `pytest`.
 
 ---
 
-## Data Flow — Creating a Ticket
+## `docs/` — Documentation
 
-Here's exactly what happens when a user clicks "Create Ticket" on the frontend:
-
-```
-1. Frontend (page.tsx)
-   └── createTicket({ email, subject, message })
-       └── POST /api/v1/tickets (proxied via next.config.ts)
-
-2. Backend (tickets.py → create_ticket)
-   ├── get_or_create_customer(db, email)     → customers table
-   ├── get_or_create_ai_agent(db)            → agents table
-   ├── repo_create_ticket(db, ...)           → tickets table
-   ├── repo_add_message(db, "customer", ...) → messages table
-   │
-   ├── process_ticket(ticket_id, ...)        → graph.py
-   │   └── compiled_graph.ainvoke(state, config={
-   │       "run_name": "ticket-{id}",
-   │       "tags": ["customer-support", "channel:web"],
-   │       "metadata": { ticket_id, email, subject },
-   │       "configurable": { "thread_id": ticket_id }
-   │   })
-   │       ├── classify_ticket    → LLM call → intent, priority, sentiment
-   │       ├── search_kb          → keyword search → relevant articles
-   │       ├── generate_response  → LLM call → draft response
-   │       ├── validate_response  → quality check → approve/retry
-   │       └── finalize           → mark resolved
-   │
-   ├── Update ticket (status, priority, category, ai_context)
-   ├── repo_add_message(db, "ai_agent", response) → messages table
-   ├── add_agent_action(db, ...) × N               → agent_actions table
-   └── Return CreateTicketResponse to frontend
-
-3. LangSmith Dashboard
-   └── Trace appears with thread_id = ticket_id
-       ├── classify_ticket (LLM call details)
-       ├── generate_response (LLM call details)
-       └── Full input/output for each node
-```
-
----
-
-## Key Configuration
-
-| Setting | Where | Purpose |
-|---------|-------|---------|
-| `DATABASE_URL` | `.env` | Supabase PostgreSQL connection (asyncpg driver, port 6543) |
-| `LLM_PROVIDER` | `.env` | `google` or `groq` |
-| `LLM_MODEL` | `.env` | Model name (e.g., `gemini-2.0-flash`, `llama-3.1-70b-versatile`) |
-| `LANGCHAIN_TRACING_V2` | `.env` | `true` to enable LangSmith tracing |
-| `LANGCHAIN_ENDPOINT` | `.env` | API URL (US: `https://api.smith.langchain.com`, EU: `https://eu.api.smith.langchain.com`) |
-| `LANGCHAIN_API_KEY` | `.env` | LangSmith API key |
-| `SUPABASE_URL` | `.env` | Supabase project URL |
-| `SUPABASE_ANON_KEY` | `.env` | Supabase anonymous key |
+| File | Purpose |
+|------|---------|
+| `SETUP.md` | Complete setup guide with API key instructions |
+| `ARCHITECTURE.md` | System design, data flow, design decisions |
+| `PROJECT_STRUCTURE.md` | This file — every file explained |
+| `API_REFERENCE.md` | All API endpoints with examples |
+| `RAG_DEEP_DIVE.md` | How vector search and embeddings work |
+| `COMPLETE_PROJECT_GUIDE.md` | Comprehensive project guide (legacy) |
+| `01-06_*.md` | Step-by-step build guides (legacy) |

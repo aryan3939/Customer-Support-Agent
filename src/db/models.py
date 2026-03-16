@@ -50,6 +50,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
 
 
 # =============================================================================
@@ -233,6 +234,9 @@ class Ticket(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    resolved_by: Mapped[str | None] = mapped_column(
+        String(50), nullable=True,
+    )  # "customer", "admin", or "ai_agent"
     
     # --- Constraints ---
     # CHECK constraints ensure only valid values can be stored
@@ -526,12 +530,12 @@ class KBEmbedding(Base):
     are stored here and searched using pgvector for similarity.
     
     HOW RAG WORKS:
-        1. Article "Password Reset Guide" is split into 5 chunks
+        1. Article "Password Reset Guide" is split into chunks
         2. Each chunk → sentence-transformers → 384-dim vector
         3. Vectors stored in this table
         4. When customer asks about passwords:
            - Their question → vector
-           - pgvector finds most similar chunk vectors
+           - pgvector finds most similar chunk vectors (cosine distance)
            - Original text from those chunks fed to LLM as context
     
     Database table: kb_embeddings
@@ -557,9 +561,8 @@ class KBEmbedding(Base):
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     
     # The vector embedding — stored as a pgvector 'vector' type
-    # We'll handle the actual vector column via Alembic migration
-    # since it requires the pgvector extension
-    # embedding: mapped_column(Vector(384))  ← Added in migration
+    # 384 dimensions matches the all-MiniLM-L6-v2 model output
+    embedding = mapped_column(Vector(384), nullable=False)
     
     __table_args__ = (
         Index("idx_embeddings_article", "article_id"),

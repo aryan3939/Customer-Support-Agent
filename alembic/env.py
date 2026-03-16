@@ -22,6 +22,12 @@ HOW ALEMBIC WORKS:
     models.py (Python) → alembic revision → migration file → alembic upgrade → database
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to sys.path so "from src.xxx" imports work
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import asyncio
 from logging.config import fileConfig
 
@@ -38,7 +44,8 @@ config = context.config
 
 # Set the database URL from our application settings
 # This overrides the placeholder in alembic.ini
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Escape % chars — configparser treats them as interpolation syntax
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 # Setup logging from alembic.ini
 if config.config_file_name is not None:
@@ -92,6 +99,12 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,  # Don't pool connections during migrations
+        # Supabase uses PgBouncer (port 6543) in transaction mode,
+        # which doesn't support prepared statements. Must match session.py.
+        connect_args={
+            "statement_cache_size": 0,
+            "prepared_statement_cache_size": 0,
+        },
     )
 
     async with connectable.connect() as connection:

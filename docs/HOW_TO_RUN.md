@@ -1,190 +1,168 @@
-# Customer Support Agent — How to Run
+# 🚀 How to Run the Project
 
-## Step-by-Step Setup Guide
-
----
-
-### Step 1: Create Virtual Environment
-
-Open your terminal in the project folder:
-
-```bash
-cd "d:\OneDrive - iitr.ac.in\Projects\Customer Support Agent"
-
-# Create virtual environment
-python -m venv .venv
-
-# Activate it (Windows)
-.venv\Scripts\activate
-
-# You should see (.venv) in your terminal prompt
-```
+Quick-start guide to get the Customer Support Agent running locally.
+For detailed explanations of each step, see the numbered build guides (01-06).
 
 ---
 
-### Step 2: Install Dependencies
+## Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- Supabase account (free tier)
+- Google AI Studio or Groq API key (free tier)
+
+---
+
+## 1. Clone & Set Up Backend
 
 ```bash
+git clone <your-repo-url>
+cd "Customer Support Agent"
+
+# Create and activate virtual environment
+python -m venv venv
+venv\Scripts\activate         # Windows CMD
+# source venv/bin/activate    # macOS/Linux
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-This installs: FastAPI, LangGraph, LangChain, SQLAlchemy, and everything else.
-
-> **Note**: `sentence-transformers` downloads a ~90MB model on first use. If this is slow or you don't need embeddings yet, you can comment it out in `requirements.txt`.
-
 ---
 
-### Step 3: Get Your API Key
-
-You need a Google AI Studio API key (free):
-
-1. Go to **https://aistudio.google.com/apikey**
-2. Sign in with your Google account
-3. Click **"Create API Key"**
-4. Copy the key
-
----
-
-### Step 4: Create Your .env File
+## 2. Configure Environment Variables
 
 ```bash
-copy .env.example .env
+copy .env.example .env        # Windows
+# cp .env.example .env        # macOS/Linux
 ```
 
-Now edit `.env` and fill in these **required** values:
+Edit `.env` with your credentials:
 
 ```env
-# REQUIRED — Your Google API key from Step 3
-GOOGLE_API_KEY=AIzaSy...your_key_here...
+# Database (from Supabase Dashboard → Settings → Database)
+DATABASE_URL=postgresql+asyncpg://postgres.xxx:password@aws-0-region.pooler.supabase.com:6543/postgres
 
-# REQUIRED — Database URL
-# Option A: Use Supabase (recommended)
-#   Go to supabase.com → New Project → Settings → Database → Connection String
-#   Use the "URI" format and replace [YOUR-PASSWORD] with your DB password
-DATABASE_URL=postgresql+asyncpg://postgres.xxxxx:password@aws-0-region.pooler.supabase.com:6543/postgres
+# Supabase (from Dashboard → Settings → API)
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_ANON_KEY=eyJhbGci...
+SUPABASE_JWT_SECRET=your-jwt-secret
 
-# Option B: Skip DB for now (app still works without it!)
-# Just put any valid-looking URL, the app gracefully handles DB failures:
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/testdb
+# LLM (from aistudio.google.com/apikey)
+LLM_PROVIDER=google
+GOOGLE_API_KEY=AIzaSyC...
+LLM_MODEL=gemini-2.0-flash
+
+# LangSmith tracing (optional, from smith.langchain.com)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=lsv2_pt_...
 ```
 
-Everything else has sensible defaults and doesn't need changing.
+See [API_KEYS_SETUP.md](API_KEYS_SETUP.md) for detailed instructions on getting each key.
 
 ---
 
-### Step 5: Run the Server
+## 3. Enable pgvector Extension
+
+In the Supabase Dashboard → **SQL Editor**, run:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+---
+
+## 4. Seed the Knowledge Base
+
+```bash
+python scripts/seed_kb.py
+```
+
+This populates the vector knowledge base with support articles and their embeddings.
+First run downloads the embedding model (~90MB).
+
+---
+
+## 5. Start the Backend
 
 ```bash
 uvicorn src.main:app --reload
 ```
 
-You should see output like:
+You should see:
 ```
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO: application_starting ...
+INFO: database_connected ...
+INFO: embedding_model_loaded — dimension=384
+INFO: application_started — All systems ready ✓
 ```
 
-> **Note**: If the database connection fails, the app will still start — it logs a warning and continues. The AI agent and all API endpoints work without the database (they use in-memory storage).
+Visit `http://localhost:8000/docs` for the interactive Swagger UI.
 
 ---
 
-### Step 6: Test with Postman
+## 6. Set Up & Start the Frontend
 
-#### 6a. Root / Health Check
+```bash
+cd frontend
+npm install
 
-```
-GET http://localhost:8000/
-GET http://localhost:8000/health
-```
-
-#### 6b. Create a Ticket (THE MAIN ONE!)
-
-```
-POST http://localhost:8000/api/v1/tickets
-Content-Type: application/json
-
-{
-    "customer_email": "user@example.com",
-    "subject": "Cannot reset my password",
-    "message": "I have tried clicking forgot password 3 times but no reset email arrives. I checked spam too. Please help!",
-    "channel": "web"
-}
+# Configure Supabase for the frontend
+copy .env.local.example .env.local     # Windows
 ```
 
-**What happens behind the scenes:**
-1. FastAPI validates the request (Pydantic)
-2. LangGraph workflow starts:
-   - Classifier → asks Gemini to classify intent/priority/sentiment
-   - KB Search → finds relevant articles (Password Reset Guide)
-   - Resolver → generates response using KB context
-   - Validator → QA checks the response
-3. Returns the AI response + classification + audit trail
-
-#### 6c. List All Tickets
-
-```
-GET http://localhost:8000/api/v1/tickets
+Edit `frontend/.env.local`:
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGci...
 ```
 
-#### 6d. Get Ticket Detail (use the ID from step 6b)
-
-```
-GET http://localhost:8000/api/v1/tickets/{ticket_id}
+```bash
+npm run dev
 ```
 
-#### 6e. Send a Follow-Up Message
+Visit `http://localhost:3000` — you'll see the login / sign-up page.
 
-```
-POST http://localhost:8000/api/v1/tickets/{ticket_id}/messages
-Content-Type: application/json
+---
 
-{
-    "content": "I still haven't received the reset email. Can you check if my account is locked?",
-    "sender_type": "customer"
-}
-```
+## 7. Create Users
 
-#### 6f. View AI Audit Trail
+### Customer (via Frontend)
+1. Go to `http://localhost:3000/login`
+2. Click **Sign Up** tab
+3. Enter email and password → submit
+4. Check email for confirmation link
 
-```
-GET http://localhost:8000/api/v1/tickets/{ticket_id}/actions
-```
-
-#### 6g. Update Ticket Status
-
-```
-PATCH http://localhost:8000/api/v1/tickets/{ticket_id}/status
-Content-Type: application/json
-
-{"status": "resolved"}
-```
-
-#### 6h. Dashboard Metrics
-
-```
-GET http://localhost:8000/api/v1/analytics/dashboard
+### Admin (via Supabase SQL Editor)
+1. Create a user (sign up via frontend or Supabase Dashboard)
+2. Run in SQL Editor:
+```sql
+UPDATE auth.users
+SET raw_user_meta_data = jsonb_set(
+    COALESCE(raw_user_meta_data, '{}'),
+    '{role}', '"admin"'
+)
+WHERE email = 'admin@example.com';
 ```
 
 ---
 
-### Step 7: Swagger UI (Alternative to Postman)
+## 8. Test the System
 
-FastAPI auto-generates interactive API docs:
+1. **Sign in** as a customer at `http://localhost:3000/login`
+2. **Create a ticket** — the AI processes it and shows the classification + response
+3. **Click the ticket** to see the chat view
+4. **Send follow-up messages** — the AI responds with full conversation context
+5. **Resolve the ticket** from the ticket detail page
 
-- **http://localhost:8000/docs** — Swagger UI (try endpoints right in the browser)
-- **http://localhost:8000/redoc** — Clean API documentation
-
----
-
-### Test Script (No Server Needed)
-
-To test the AI agent directly without the server:
+### Test the Agent Standalone
 
 ```bash
 python scripts/test_agent.py
 ```
 
-This processes 3 sample tickets and shows classification + responses.
+Processes sample tickets through the AI and prints results without needing the server.
 
 ---
 
@@ -192,63 +170,11 @@ This processes 3 sample tickets and shows classification + responses.
 
 | Problem | Solution |
 |---------|----------|
-| `ModuleNotFoundError` | Make sure venv is activated: `.venv\Scripts\activate` |
+| `ModuleNotFoundError` | Activate venv: `venv\Scripts\activate` |
 | `GOOGLE_API_KEY not set` | Edit `.env` and add your API key |
-| `Database connection failed` | That's OK! App works without DB. Set any URL in `.env` |
-| `Port 8000 already in use` | Use `uvicorn src.main:app --reload --port 8001` |
-| `pip install fails` | Try: `pip install --upgrade pip` then retry |
-
----
-
-## Project File Map
-
-```
-src/
-├── main.py                    ← FastAPI app (START HERE)
-├── config.py                  ← Settings from .env
-│
-├── agents/                    ← 🧠 AI Agent (LangGraph)
-│   ├── state.py               ← TicketState data schema
-│   ├── llm.py                 ← LLM factory (Google/Groq)
-│   ├── graph.py               ← Main workflow graph
-│   ├── nodes/
-│   │   ├── classifier.py      ← Classify tickets (intent/priority)
-│   │   ├── resolver.py        ← Generate AI responses
-│   │   ├── escalator.py       ← Human handoff logic
-│   │   └── validator.py       ← QA check responses
-│   └── edges/
-│       └── conditions.py      ← Routing logic between nodes
-│
-├── api/                       ← 🌐 REST API
-│   ├── routes/
-│   │   ├── tickets.py         ← Ticket CRUD endpoints
-│   │   ├── analytics.py       ← Dashboard metrics
-│   │   └── webhooks.py        ← Email intake webhook
-│   ├── schemas/
-│   │   ├── ticket.py          ← Request/response models
-│   │   └── responses.py       ← Standard wrappers
-│   └── middleware/
-│       ├── auth.py            ← API key authentication
-│       └── rate_limit.py      ← Rate limiting
-│
-├── tools/                     ← 🔧 Agent Tools
-│   ├── knowledge_base.py      ← KB search (RAG)
-│   ├── customer_service.py    ← Customer lookup
-│   ├── external_apis.py       ← Order/refund/password APIs
-│   └── notifications.py       ← Slack/email alerts
-│
-├── services/                  ← 📊 Business Logic
-│   ├── ticket_service.py      ← Ticket operations
-│   └── analytics_service.py   ← Metrics computation
-│
-├── db/                        ← 💾 Database
-│   ├── models.py              ← SQLAlchemy ORM models
-│   ├── session.py             ← Connection pool
-│   └── repositories/
-│       ├── ticket_repo.py     ← Ticket queries
-│       └── customer_repo.py   ← Customer queries
-│
-└── utils/                     ← 🛠️ Utilities
-    ├── logging.py             ← Structured logging
-    └── metrics.py             ← Performance tracking
-```
+| `Database connection failed` | Check `DATABASE_URL` — correct password, host, port 6543 |
+| `"alg value is not allowed"` | Install `PyJWT[crypto]`: `pip install PyJWT[crypto]` |
+| Port 8000 already in use | Use `uvicorn src.main:app --reload --port 8001` |
+| Frontend can't load tickets | Make sure backend is running on port 8000 |
+| KB search returns no results | Run `python scripts/seed_kb.py` |
+| Supabase signup no email | Check Supabase Dashboard → Authentication → Email settings |

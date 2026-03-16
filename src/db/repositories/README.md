@@ -1,60 +1,77 @@
-# `repositories/` — Database Query Functions
+# `src/db/repositories/` — Repository Pattern (CRUD Operations)
 
-Repositories encapsulate all **SQL queries** behind clean Python functions.
-This is the **Repository Pattern** — routes and services never interact
-with the database directly.
+Repositories are functions that encapsulate all database queries.
+They are the **only place** where SQL operations happen — routes and
+services call these functions instead of writing queries directly.
 
-## Why Repositories?
+## Why the Repository Pattern?
 
+```python
+# ❌ BAD — SQL scattered in route handlers
+@router.post("/tickets")
+async def create_ticket(db: AsyncSession):
+    customer = await db.execute(
+        select(Customer).where(Customer.email == email)
+    )
+    # ... lots of SQL mixed with business logic
+
+# ✅ GOOD — Repository abstracts the SQL away
+@router.post("/tickets")
+async def create_ticket(db: AsyncSession):
+    customer = await get_or_create_customer(db, email)
+    # Clean, readable, testable
 ```
-❌ Bad: SQL in routes
-    @router.get("/tickets")
-    async def list_tickets(db):
-        result = await db.execute(select(Ticket).where(Ticket.status == "open"))
-        ...
 
-✅ Good: Repository layer
-    @router.get("/tickets")
-    async def list_tickets(db):
-        tickets, total = await repo.list_tickets(db, status="open")
-        ...
-```
-
-Benefits:
-- **Testable** — mock the repo function, not the DB
-- **Reusable** — same query used by routes, services, scripts
-- **Swappable** — change from PostgreSQL to DynamoDB by rewriting only this layer
+**Benefits:**
+- Routes stay clean — just business logic, no SQL
+- SQL is centralized — change a query in one place, all callers benefit
+- Testable — mock the repository in unit tests
+- Reusable — the same query function used across routes, services, admin
 
 ## Files
 
-### `ticket_repo.py`
-Full CRUD for tickets and related entities:
+### `ticket_repo.py` — Ticket CRUD (6.8KB)
+
+All ticket-related database operations:
 
 | Function | What It Does |
 |----------|-------------|
-| `get_or_create_ai_agent(db)` | Creates/returns the system AI agent row (idempotent) |
-| `create_ticket(db, customer_id, subject, ...)` | Inserts a new ticket |
-| `get_ticket_by_id(db, ticket_id)` | Fetches one ticket with customer eagerly loaded |
-| `list_tickets(db, status?, priority?, ...)` | Paginated list with filters, returns `(tickets, count)` |
-| `update_ticket_status(db, ticket_id, status)` | Updates status (sets `resolved_at` for resolved/closed) |
-| `add_message(db, ticket_id, sender_type, content)` | Adds a message to the conversation thread |
-| `add_agent_action(db, ticket_id, action_type, ...)` | Records an AI action in the audit trail |
-| `get_actions_for_ticket(db, ticket_id)` | Gets all actions for a ticket, ordered by time |
-| `get_messages_for_ticket(db, ticket_id)` | Gets all messages for a ticket, ordered by time |
+| `create_ticket(db, customer_id, subject, channel, ...)` | INSERTs a new ticket with status `"new"` and default priority |
+| `get_ticket_by_id(db, ticket_id)` | SELECTs a single ticket with all relationships eagerly loaded (messages, actions, customer, agent) |
+| `get_tickets_by_customer(db, customer_email, status, priority, limit, offset)` | SELECTs tickets with optional filters, pagination, and eager loading — used for the ticket list |
+| `add_message(db, ticket_id, content, sender_type, metadata)` | INSERTs a new message into the ticket thread |
+| `update_ticket_status(db, ticket_id, status)` | UPDATEs the ticket's status field |
+| `add_agent_action(db, ticket_id, agent_id, action_type, data, reasoning, outcome)` | INSERTs an audit trail entry — records every AI decision |
+| `get_all_tickets(db, filters...)` | Admin query — SELECTs all tickets across all customers with advanced filtering (status, priority, category, date range, email search, sort) |
 
-### `customer_repo.py`
-Customer management:
+**Eager loading:** All queries use `selectinload()` or `joinedload()` to fetch related
+data (messages, actions, customer) in the same query. Without this, accessing
+`ticket.messages` would trigger a lazy load — a separate SQL query per relationship,
+causing N+1 query problems.
+
+```python
+# Example: eager loading prevents N+1 queries
+stmt = (
+    select(Ticket)
+    .options(
+        selectinload(Ticket.messages),       # Load messages in same query
+        selectinload(Ticket.agent_actions),  # Load actions in same query
+        joinedload(Ticket.customer),         # Load customer via JOIN
+    )
+    .where(Ticket.id == ticket_id)
+)
+```
+
+---
+
+### `customer_repo.py` — Customer CRUD (1.5KB)
 
 | Function | What It Does |
 |----------|-------------|
-| `get_or_create_customer(db, email, name)` | Finds customer by email or creates new (returns `(customer, created)`) |
-| `get_customer_by_email(db, email)` | Looks up customer by email |
-| `get_customer_by_id(db, id)` | Looks up customer by UUID |
+| `get_or_create_customer(db, email, name)` | Finds a customer by email, or creates a new one if they don't exist. Used every time a ticket is created — ensures we have a customer record before creating the ticket. |
 
-## How to Explain This
+---
 
-> "Repositories isolate database queries behind a clean interface. Every query
-> is a documented function with typed parameters. This makes queries reusable
-> (the same `list_tickets` works for API routes, analytics, and tests),
-> testable (mock the function, not the database), and maintainable (all queries
-> for one entity live in one file)."
+### `__init__.py` — Package Init
+
+Makes the folder importable.

@@ -94,14 +94,14 @@ async def escalate_ticket(state: TicketState) -> dict:
         
         # Generate handoff summary for human agent
         user_message = f"""Ticket being escalated:
-Subject: {state.get("subject", "")}
-Message: {state.get("message", "")}
-Intent: {state.get("intent", "unknown")}
-Category: {state.get("category", "general")}
-Priority: {state.get("priority", "medium")}
-Sentiment: {state.get("sentiment", "neutral")}
-Escalation Reason: {reason}
-Previous Actions: {_format_actions(state.get("actions_taken", []))}"""
+            Subject: {state.get("subject", "")}
+            Message: {state.get("message", "")}
+            Intent: {state.get("intent", "unknown")}
+            Category: {state.get("category", "general")}
+            Priority: {state.get("priority", "medium")}
+            Sentiment: {state.get("sentiment", "neutral")}
+            Escalation Reason: {reason}
+            Previous Actions: {_format_actions(state.get("actions_taken", []))}"""
 
         response = await llm.ainvoke([
             SystemMessage(content=ESCALATION_SYSTEM_PROMPT),

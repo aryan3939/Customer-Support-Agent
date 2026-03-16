@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { getTickets, createTicket, type TicketSummary } from "@/lib/api";
+import { useAuth } from "@/hooks/useAuth";
 
 // =============================================================================
 // Dashboard Page — Ticket List + Create
@@ -14,6 +15,7 @@ export default function Dashboard() {
   const [showForm, setShowForm] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const { user } = useAuth();
 
   const fetchTickets = useCallback(async () => {
     try {
@@ -85,20 +87,15 @@ export default function Dashboard() {
           className="mb-6 p-5 rounded-xl bg-surface-2 border border-border space-y-4"
         >
           <h2 className="font-semibold text-text">Create New Ticket</h2>
-          <div className="grid grid-cols-2 gap-4">
-            <input
-              name="email"
-              type="email"
-              placeholder="Customer email"
-              required
-              className="px-3 py-2 rounded-lg bg-surface-3 border border-border text-text text-sm placeholder:text-text-dim focus:outline-none focus:border-accent"
-            />
+          <div className="text-xs text-text-dim mb-1">Creating as <span className="text-accent">{user?.email}</span></div>
+          <input type="hidden" name="email" value={user?.email || ""} />
+          <div>
             <input
               name="subject"
               placeholder="Subject (min 5 chars)"
               required
               minLength={5}
-              className="px-3 py-2 rounded-lg bg-surface-3 border border-border text-text text-sm placeholder:text-text-dim focus:outline-none focus:border-accent"
+              className="w-full px-3 py-2 rounded-lg bg-surface-3 border border-border text-text text-sm placeholder:text-text-dim focus:outline-none focus:border-accent"
             />
           </div>
           <textarea

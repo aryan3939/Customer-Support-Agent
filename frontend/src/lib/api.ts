@@ -2,6 +2,8 @@
 // API Client — typed wrappers for the FastAPI backend
 // =============================================================================
 
+import { getSupabaseBrowserClient } from "./supabase";
+
 const BASE = "/api/v1";
 
 // -----------------------------------------------------------------------------
@@ -88,13 +90,56 @@ export interface DashboardMetrics {
   sentiment_breakdown: Record<string, number>;
 }
 
+// Admin types
+export interface ConversationSummary extends TicketSummary {
+  resolved_by: string | null;
+  message_count: number;
+  latest_message_preview: string | null;
+}
+
+export interface ConversationListResponse {
+  conversations: ConversationSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AdminFilters {
+  status?: string;
+  priority?: string;
+  category?: string;
+  customer_email?: string;
+  ticket_id?: string;
+  date_from?: string;
+  date_to?: string;
+  resolved_by?: string;
+  sort_by?: string;
+  sort_order?: string;
+  limit?: number;
+  offset?: number;
+}
+
 // -----------------------------------------------------------------------------
 // API Functions
 // -----------------------------------------------------------------------------
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  // Get the current session token from Supabase
+  const supabase = getSupabaseBrowserClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  if (session?.access_token) {
+    headers["Authorization"] = `Bearer ${session.access_token}`;
+  }
+
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers,
     ...options,
   });
   if (!res.ok) {
@@ -146,6 +191,55 @@ export async function updateTicketStatus(
   });
 }
 
+export async function resolveTicket(
+  ticketId: string,
+  resolvedBy: "customer" | "admin" = "customer"
+): Promise<TicketSummary> {
+  return apiFetch<TicketSummary>(`/tickets/${ticketId}/resolve`, {
+    method: "PATCH",
+    body: JSON.stringify({ resolved_by: resolvedBy }),
+  });
+}
+
 export async function getDashboard(): Promise<DashboardMetrics> {
   return apiFetch<DashboardMetrics>("/analytics/dashboard");
+}
+
+// -----------------------------------------------------------------------------
+// Admin API Functions
+// -----------------------------------------------------------------------------
+
+export async function getAdminConversations(
+  filters: AdminFilters = {}
+): Promise<ConversationListResponse> {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, String(value));
+    }
+  });
+  const query = params.toString();
+  return apiFetch<ConversationListResponse>(
+    `/admin/conversations${query ? `?${query}` : ""}`
+  );
+}
+
+export async function getAdminConversation(id: string): Promise<TicketDetail> {
+  return apiFetch<TicketDetail>(`/admin/conversations/${id}`);
+}
+
+export async function adminReply(
+  ticketId: string,
+  content: string
+): Promise<MessageResponse> {
+  return apiFetch<MessageResponse>(`/admin/conversations/${ticketId}/reply`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+}
+
+export async function adminResolve(ticketId: string): Promise<TicketSummary> {
+  return apiFetch<TicketSummary>(`/admin/conversations/${ticketId}/resolve`, {
+    method: "PATCH",
+  });
 }

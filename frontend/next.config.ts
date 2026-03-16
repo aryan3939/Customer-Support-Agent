@@ -1,6 +1,18 @@
 import type { NextConfig } from "next";
+import { config } from "dotenv";
+import { resolve } from "path";
+
+// Load the root .env file (one level up from /frontend)
+config({ path: resolve(__dirname, "..", ".env") });
 
 const nextConfig: NextConfig = {
+  // Expose root .env vars to the browser via process.env
+  // This avoids needing a separate .env.local in the frontend
+  env: {
+    NEXT_PUBLIC_SUPABASE_URL: process.env.SUPABASE_URL || "",
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY || "",
+  },
+
   // Proxy API calls to FastAPI backend
   async rewrites() {
     return {

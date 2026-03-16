@@ -1,44 +1,76 @@
-# `utils/` — Shared Utilities
+# `src/utils/` — Shared Utilities
 
-Cross-cutting utilities used by every part of the application.
-These are **infrastructure concerns**, not business logic.
+Cross-cutting concerns used across every layer of the application.
+These are "infrastructure" utilities — not specific to any feature,
+but essential for the application to work properly.
 
 ## Files
 
-### `logging.py` — Structured Logging
-Sets up **structlog** for consistent, parseable logs across the entire app.
+### `logging.py` — Structured Logging (6KB)
 
-Key functions:
-- `setup_logging(log_level, json_format)` — called once at startup in `main.py`
-- `get_logger(name)` — creates a per-module logger
+Sets up the application's logging system using **structlog** — a library
+for structured, machine-parsable logging.
 
-**Two modes:**
-- **Development**: Colored, human-readable console output
-- **Production**: JSON-formatted logs (parseable by Datadog, CloudWatch, etc.)
+**Why structured logging instead of `print()` or basic `logging`?**
 
-Example output:
+```python
+# ❌ BAD — unstructured, hard to search/filter
+print(f"Created ticket {ticket_id} for {email}")
+logging.info(f"Created ticket {ticket_id} for {email}")
+
+# ✅ GOOD — structured, machine-parsable, searchable
+logger.info(
+    "ticket_created",
+    ticket_id=str(ticket.id),
+    customer=email,
+    priority=classification.priority,
+)
+# Output in development (colorized):
+# 2026-02-18 15:30:00 [info] ticket_created  ticket_id=abc-123 customer=user@example.com priority=high
+
+# Output in production (JSON):
+# {"event": "ticket_created", "ticket_id": "abc-123", "customer": "user@example.com", "priority": "high", "timestamp": "2026-02-18T15:30:00Z"}
 ```
-# Dev mode
-2025-02-10 10:30:45 [info] ticket_created  ticket_id=abc-123  priority=high
 
-# Production JSON mode
-{"event": "ticket_created", "ticket_id": "abc-123", "priority": "high", "timestamp": "2025-02-10T10:30:45Z"}
+**Key configuration:**
+- **Development:** Colored console output with human-readable formatting
+- **Production:** JSON output for ingestion by log aggregators (Datadog, ELK, etc.)
+- **Log level:** Configurable via `LOG_LEVEL` environment variable
+
+**Usage in any file:**
+```python
+from src.utils.logging import get_logger
+logger = get_logger(__name__)  # Creates a logger named after the module
+
+logger.info("something_happened", key="value")
+logger.error("something_failed", error=str(e))
 ```
 
-### `metrics.py` — Simple Metrics Tracking
-In-memory counters and latency tracking for basic observability.
+---
 
-Key functions:
-- `increment(metric_name)` — bump a counter
-- `track_latency(op_name)` — async context manager that records operation duration
-- `get_metrics()` — returns all collected metrics
+### `metrics.py` — Performance Tracking (1.7KB)
 
-**Production upgrade**: Replace with Prometheus client or Datadog StatsD.
+Simple performance counters and timing utilities for monitoring application health.
 
-## How to Explain This
+**What it tracks:**
+- Request count per endpoint
+- Average response time
+- Error rate
+- AI agent processing time
 
-> "Structured logging with structlog gives me JSON-formatted, queryable logs
-> in production while keeping human-readable output in development. Every log
-> line includes context (ticket_id, customer_email, operation) so I can filter
-> and search in log aggregation tools. The metrics module tracks request counts
-> and latency for basic performance monitoring."
+**Usage:**
+```python
+from src.utils.metrics import track_time
+
+@track_time("ticket_processing")
+async def process_ticket(...):
+    # Execution time is automatically recorded
+```
+
+In production, these metrics would feed into monitoring dashboards (Grafana, Datadog).
+
+---
+
+### `__init__.py` — Package Init
+
+Exports `get_logger` for convenience.

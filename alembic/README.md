@@ -1,57 +1,77 @@
 # `alembic/` — Database Migrations
 
-**Alembic** is SQLAlchemy's migration tool — it tracks schema changes
-(add column, create table, drop index) as versioned Python scripts,
-so you can upgrade/rollback the database reliably.
+Alembic is a database migration tool for SQLAlchemy. It tracks changes to
+your database schema over time, letting you apply and roll back changes
+safely.
 
-## Current Status
+## Why Use Migrations?
 
-> **Not actively used yet.** Tables are auto-created at startup via
-> `Base.metadata.create_all()` in `session.py`. Alembic is set up for
-> when the schema stabilizes and you need versioned migrations.
+Without migrations, changing the database schema (adding a column, creating a table)
+requires manual SQL or dropping/recreating tables (losing all data). Migrations
+provide a **versioned, repeatable** way to evolve the schema:
 
-## Files
-
-| File | What It Does |
-|------|-------------|
-| `env.py` | Alembic's runtime config — connects to the database, imports models, runs migrations |
-| `script.py.mako` | Template for auto-generated migration files |
-| `versions/` | Migration scripts (currently empty) |
-
-The root `alembic.ini` file contains the database URL and logging config.
-
-## How to Use (When Needed)
-
-```bash
-# 1. Generate a migration after changing models.py
-alembic revision --autogenerate -m "add priority column to tickets"
-
-# 2. Review the generated file in alembic/versions/
-# 3. Apply the migration
-alembic upgrade head
-
-# 4. Rollback if something goes wrong
-alembic downgrade -1
+```
+Version 1: Initial tables (customers, tickets, messages)
+    ↓
+Version 2: Add 'resolved_by' column to tickets table
+    ↓
+Version 3: Add 'embedding' column to knowledge_base_articles
 ```
 
-## Why Both `create_all` and Alembic?
+Each migration can be applied (upgrade) or reversed (downgrade).
 
-| | `create_all` | Alembic |
-|---|---|---|
-| **Purpose** | Quick development setup | Production schema management |
-| **Creates tables** | ✅ | ✅ |
-| **Adds columns** | ❌ (only creates, never alters) | ✅ |
-| **Drops columns** | ❌ | ✅ |
-| **Rollback** | ❌ | ✅ |
-| **Version history** | ❌ | ✅ |
+## Folder Structure
 
-During development, `create_all` is faster. In production, Alembic ensures
-safe, versioned schema changes.
+| File/Folder | Purpose |
+|-------------|---------|
+| `env.py` | **Alembic configuration** — sets up the database connection (reads `DATABASE_URL` from `.env`), configures the migration engine, and defines how migrations run. Uses async SQLAlchemy for compatibility with our async app. |
+| `script.py.mako` | **Template** for new migration files. Mako is a Python templating engine. When you run `alembic revision`, it uses this template to create the migration file. |
+| `versions/` | **Migration scripts** — each file in here is one migration. Files are ordered by timestamp and linked together (each knows its parent revision). |
 
-## How to Explain This
+## Key Commands
 
-> "I use `create_all` for rapid development — it auto-creates tables at
-> startup. For production, Alembic provides versioned, reviewable, and
-> reversible database migrations. It auto-detects differences between my
-> SQLAlchemy models and the actual database schema, generates migration
-> scripts, and lets me upgrade or rollback safely."
+```bash
+# Create a new migration (auto-generates based on model changes)
+alembic revision --autogenerate -m "add_resolved_by_column"
+
+# Apply all pending migrations
+alembic upgrade head
+
+# Roll back the last migration
+alembic downgrade -1
+
+# Show migration history
+alembic history
+
+# Show current database migration version
+alembic current
+```
+
+## How `env.py` Works
+
+The env.py file is Alembic's brain — it:
+1. Reads `DATABASE_URL` from environment variables (via `config.py`)
+2. Replaces the sync driver with async driver (`postgresql+asyncpg://`)
+3. Imports all SQLAlchemy models (so Alembic knows the target schema)
+4. Compares current DB schema vs. model definitions → generates migration steps
+
+## Auto-Generate vs. Manual Migrations
+
+**Auto-generate** (recommended for most changes):
+```bash
+alembic revision --autogenerate -m "description"
+```
+Alembic compares your SQLAlchemy models to the actual database and generates
+the migration automatically. Works for: adding columns, creating tables,
+changing types.
+
+**Manual** (for complex operations):
+```bash
+alembic revision -m "description"
+```
+Creates an empty migration file. You write the upgrade/downgrade SQL yourself.
+Needed for: data migrations, complex constraints, custom SQL.
+
+> **Note:** In this project, most schema changes are also applied automatically
+> by `init_db()` on startup. Alembic migrations are kept as a formal record
+> and for production deployments where you can't just recreate tables.

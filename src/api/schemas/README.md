@@ -1,41 +1,58 @@
-# `schemas/` — Pydantic Request/Response Models
+# `src/api/schemas/` — Request/Response Models (Pydantic)
 
-This folder defines the **data contracts** between the frontend and backend.
-Every request body and response body is validated by a Pydantic model.
+Pydantic models that define the **exact shape** of every HTTP request body
+and every HTTP response. They serve three critical purposes:
 
-## Why Pydantic?
+1. **Validation** — FastAPI uses them to validate incoming requests automatically. Invalid data gets a clear 422 error before your route code even runs.
+2. **Serialization** — Convert SQLAlchemy ORM objects into clean JSON responses (no database internals leak out).
+3. **Documentation** — FastAPI generates interactive Swagger UI docs from these models automatically.
 
-1. **Automatic validation** — Invalid data is rejected with clear error messages before reaching any logic
-2. **Type safety** — Python type hints enforced at runtime
-3. **Auto-generated docs** — FastAPI uses these models to build the `/docs` Swagger page
-4. **Serialization** — Handles `datetime`, `UUID`, and other complex types automatically
+## How It Works
+
+```python
+# In a route handler:
+@router.post("/tickets", response_model=TicketDetailResponse)
+async def create_ticket(request: CreateTicketRequest):
+    # 'request' is ALREADY validated — Pydantic checked all fields
+    # The return value is AUTOMATICALLY serialized via TicketDetailResponse
+```
 
 ## Files
 
-### `ticket.py`
-All ticket-related schemas:
+### `ticket.py` — Ticket Request/Response Models (6KB)
 
-| Schema | Used For |
-|--------|---------|
-| `CreateTicketRequest` | `POST /tickets` request body (email, subject, message, channel) |
-| `CreateTicketResponse` | Response after creating a ticket (id, status, AI response, classification) |
-| `TicketResponse` | Single ticket summary (used in lists and updates) |
-| `TicketDetailResponse` | Full ticket with messages + actions (used in detail view) |
-| `TicketListResponse` | Paginated list wrapper (tickets array + total/limit/offset) |
-| `AddMessageRequest` | `POST /tickets/{id}/messages` request body (content, sender_type) |
-| `UpdateTicketStatusRequest` | `PATCH /tickets/{id}/status` request body (new status) |
-| `MessageResponse` | Individual message in a conversation thread |
-| `ActionResponse` | Individual AI action in the audit trail |
-| `AgentInfo` | Agent details embedded in responses (id, name, is_ai) |
+The main schemas for ticket operations:
 
-### `responses.py`
-Generic response wrappers:
-- `SuccessResponse` — `{ "status": "ok", "data": ... }`
-- `ErrorResponse` — `{ "status": "error", "message": "...", "code": 400 }`
+| Model | Type | Purpose |
+|-------|------|---------|
+| `CreateTicketRequest` | Request | Validates ticket creation — `customer_email` (must be valid email), `subject` (5-200 chars), `message` (10+ chars), `channel` |
+| `SendMessageRequest` | Request | Validates follow-up messages — `content` (required), `sender_type` (customer/human_agent/ai_agent) |
+| `UpdateStatusRequest` | Request | Validates status changes — `status` must be one of the allowed values |
+| `ResolveTicketRequest` | Request | Validates resolution — `resolved_by` (customer/admin/ai_agent) |
+| `TicketResponse` | Response | Summary view — id, subject, status, priority, dates (used in list views) |
+| `TicketDetailResponse` | Response | Full view — includes all messages and AI actions (used for ticket detail) |
+| `MessageResponse` | Response | Single message — id, sender_type, content, timestamp |
+| `AgentActionResponse` | Response | Single AI action — action_type, data, reasoning, outcome |
 
-## How to Explain This
+**Key pattern:** Request models are strict (validate everything), response models are permissive (accept whatever the DB returns).
 
-> "Pydantic schemas serve as the **API contract** — they validate every request,
-> ensure consistent response shapes, and automatically generate API documentation.
-> The frontend TypeScript types in `api.ts` mirror these schemas exactly, so
-> type safety extends from Python to TypeScript."
+---
+
+### `responses.py` — Standard Response Wrappers (1KB)
+
+Generic response wrappers used across endpoints:
+
+| Model | Purpose |
+|-------|---------|
+| `SuccessResponse` | `{ "message": "Operation successful" }` — for simple confirmations |
+| `ErrorResponse` | `{ "detail": "Error message" }` — for error responses |
+| `PaginatedResponse` | `{ "items": [...], "total": 42, "limit": 20, "offset": 0 }` |
+
+---
+
+### `__init__.py` — Package Init
+
+Exports all schema models for clean importing:
+```python
+from src.api.schemas import CreateTicketRequest, TicketDetailResponse
+```

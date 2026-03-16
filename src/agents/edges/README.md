@@ -1,33 +1,64 @@
-# `edges/` — LangGraph Edge Conditions
+# `src/agents/edges/` — Conditional Routing (Graph Edges)
 
-This folder contains **conditional routing functions** used by LangGraph
-to decide which node to execute next.
+Edges in LangGraph define **which node runs next**. Regular edges are simple
+connections (A → B), but **conditional edges** are functions that decide the
+path based on the current state.
 
-In a LangGraph state machine, edges connect nodes. **Conditional edges**
-look at the current state and choose between multiple possible next nodes.
+## How Conditional Edges Work
+
+```
+[classify] ──→ should_escalate_after_classify? ──┬──→ YES → [escalate]
+                                                  └──→ NO  → [kb_search]
+```
+
+The function `should_escalate_after_classify(state)` looks at the classification
+results and decides: should we continue processing, or immediately escalate?
 
 ## Files
 
-### `conditions.py`
-Contains two routing functions:
+### `conditions.py` — Routing Decision Functions
 
-#### `should_escalate_after_classify(state) → str`
-Called after the `classify_ticket` node. Returns:
-- `"escalate"` → if priority is `urgent` AND sentiment is `angry` (skip straight to human)
-- `"continue"` → proceed to knowledge base search
+Contains two main routing functions:
 
-#### `should_escalate_after_validate(state) → str`
-Called after the `validate_response` node. Returns:
-- `"accept"` → response passed quality checks, proceed to finalize
-- `"retry"` → response failed checks, retry generation (up to max attempts)
-- `"escalate"` → max retries reached, escalate to human agent
+#### `should_escalate_after_classify(state: TicketState) → str`
 
-## How to Explain This
+Called after the classifier node. Returns either `"escalate"` or `"continue"`.
 
-> "Conditional edges are the **decision points** in the workflow. For example,
-> after classification, if a customer is both angry and has an urgent issue,
-> the system skips the AI response entirely and routes directly to a human agent.
-> After validation, if the AI's response isn't good enough, it retries
-> automatically — but only up to a limit, after which it escalates. This
-> prevents the AI from sending low-quality responses while also avoiding
-> infinite retry loops."
+**Escalation rules:**
+```python
+# Escalate if ANY of these are true:
+if state["priority"] == "urgent":           return "escalate"
+if state["sentiment"] == "angry":           return "escalate"
+if state["confidence"] < THRESHOLD:         return "escalate"  # default 0.7
+if state.get("needs_escalation"):           return "escalate"
+```
+
+**Why these rules:** Urgent tickets need human expertise. Angry customers respond
+better to human empathy. Low-confidence classifications mean the AI isn't sure
+what the customer wants — better to hand off than guess wrong.
+
+#### `should_escalate_after_validate(state: TicketState) → str`
+
+Called after the validator node. Returns either `"escalate"` or `"finalize"`.
+
+If the validator determines the response is poor quality, it sets
+`needs_escalation = True`, and this function routes to the escalation node
+instead of finalizing.
+
+### `__init__.py` — Package Init
+
+Exports the routing functions for use in `graph.py`.
+
+## How Edges Are Registered in the Graph
+
+```python
+# In graph.py — this is how conditional edges are added:
+graph.add_conditional_edges(
+    "classify",                           # After this node...
+    should_escalate_after_classify,       # ...run this function...
+    {
+        "escalate": "escalate",           # If it returns "escalate" → go to escalate node
+        "continue": "kb_search",          # If it returns "continue" → go to kb_search node
+    },
+)
+```

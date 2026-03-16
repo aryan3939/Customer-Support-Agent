@@ -38,3 +38,46 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+.next/
+
+# ── Local-only documentation (not tracked in Git) ──
+# Subdirectory READMEs (internal notes)
+src/README.md
+src/agents/README.md
+src/agents/edges/README.md
+src/agents/nodes/README.md
+src/api/README.md
+src/api/middleware/README.md
+src/api/routes/README.md
+src/api/schemas/README.md
+src/db/README.md
+src/db/repositories/README.md
+src/services/README.md
+src/tools/README.md
+src/utils/README.md
+tests/README.md
+scripts/README.md
+frontend/README.md
+docs/README.md
+
+# Extra docs (detailed guides kept locally)
+docs/01_environment_setup.md
+docs/02_project_setup.md
+docs/03_database_models.md
+docs/04_core_agent.md
+docs/05_api_routes.md
+docs/06_auth_admin_resolution.md
+docs/API_KEYS_SETUP.md
+docs/API_REFERENCE.md
+docs/ARCHITECTURE.md
+docs/COMPLETE_PROJECT_GUIDE.md
+docs/HOW_TO_RUN.md
+docs/PROJECT_STRUCTURE.md
+docs/RAG_DEEP_DIVE.md
+docs/SETUP.md

@@ -118,10 +118,27 @@ async def init_db() -> None:
             await conn.execute(text("SELECT 1"))
         logger.info("database_connected", url=settings.DATABASE_URL[:40] + "...")
         
-        # 2. Create all tables that don't exist yet
+        # 2. Enable pgvector extension (required for vector similarity search)
+        #    This MUST run before table creation so the 'vector' column type exists.
+        #    Safe to run multiple times — IF NOT EXISTS prevents errors.
+        async with engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        logger.info("pgvector_extension_enabled")
+        
+        # 3. Create all tables that don't exist yet
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("database_tables_ready", message="All tables created/verified ✓")
+        
+        # 4. Add missing columns (safe — IF NOT EXISTS prevents errors)
+        #    This handles columns added after initial table creation,
+        #    bypassing Alembic's timezone rendering bug.
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS "
+                "resolved_by VARCHAR(50)"
+            ))
+        logger.info("schema_migrations_applied")
         
     except Exception as e:
         logger.error("database_connection_failed", error=str(e))

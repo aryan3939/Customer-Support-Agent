@@ -7,6 +7,7 @@ import {
   getTicket,
   sendMessage,
   updateTicketStatus,
+  resolveTicket,
   type TicketDetail,
   type ActionResponse,
 } from "@/lib/api";
@@ -65,7 +66,7 @@ export default function TicketDetailPage() {
   const [msgInput, setMsgInput] = useState("");
   const [error, setError] = useState("");
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
-  const [isAgentMode, setIsAgentMode] = useState(false);
+
   const [statusUpdating, setStatusUpdating] = useState(false);
 
   const fetchTicket = useCallback(async () => {
@@ -89,7 +90,7 @@ export default function TicketDetailPage() {
     setSending(true);
     setError("");
     try {
-      await sendMessage(id, msgInput, isAgentMode ? "human_agent" : "customer");
+      await sendMessage(id, msgInput, "customer");
       setMsgInput("");
       await fetchTicket();
     } catch {
@@ -200,7 +201,18 @@ export default function TicketDetailPage() {
               {!isTerminal && (
                 <>
                   <button
-                    onClick={() => handleStatusUpdate("resolved")}
+                    onClick={async () => {
+                      setStatusUpdating(true);
+                      setError("");
+                      try {
+                        await resolveTicket(id, "customer");
+                        await fetchTicket();
+                      } catch {
+                        setError("Failed to resolve ticket");
+                      } finally {
+                        setStatusUpdating(false);
+                      }
+                    }}
                     disabled={statusUpdating}
                     className="px-2.5 py-1 rounded-lg text-xs font-medium bg-success/10 text-success hover:bg-success/20 transition-colors disabled:opacity-40"
                     title="Mark ticket as resolved"
@@ -251,49 +263,17 @@ export default function TicketDetailPage() {
           {/* Input Area */}
           {!isTerminal && (
             <div className="border-t border-border shrink-0">
-              {/* Agent Mode Toggle */}
-              <div className="px-3 pt-2 flex items-center gap-3">
-                <button
-                  onClick={() => setIsAgentMode(false)}
-                  className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                    !isAgentMode
-                      ? "bg-accent/15 text-accent font-medium"
-                      : "text-text-dim hover:text-text"
-                  }`}
-                >
-                  💬 Customer
-                </button>
-                <button
-                  onClick={() => setIsAgentMode(true)}
-                  className={`text-xs px-2.5 py-1 rounded-md transition-colors ${
-                    isAgentMode
-                      ? "bg-success/15 text-success font-medium"
-                      : "text-text-dim hover:text-text"
-                  }`}
-                >
-                  👤 Reply as Agent
-                </button>
-              </div>
-
               <form onSubmit={handleSend} className="p-3 flex gap-2">
                 <input
                   value={msgInput}
                   onChange={(e) => setMsgInput(e.target.value)}
-                  placeholder={
-                    isAgentMode
-                      ? "Reply as human agent..."
-                      : "Type a follow-up message..."
-                  }
+                  placeholder="Type a follow-up message..."
                   className="flex-1 px-3 py-2 rounded-lg bg-surface-3 border border-border text-text text-sm placeholder:text-text-dim focus:outline-none focus:border-accent"
                 />
                 <button
                   type="submit"
                   disabled={sending || !msgInput.trim()}
-                  className={`px-4 py-2 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-40 ${
-                    isAgentMode
-                      ? "bg-success hover:bg-success/80"
-                      : "bg-accent hover:bg-accent-hover"
-                  }`}
+                  className="px-4 py-2 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-40 bg-accent hover:bg-accent-hover"
                 >
                   {sending ? "..." : "Send"}
                 </button>

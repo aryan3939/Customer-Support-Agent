@@ -1,299 +1,273 @@
-# Phase 1C: Database Models & Migrations
+# 03 — Database Models (SQLAlchemy ORM)
 
-## Why This Step?
-
-Our app needs to **persist data** — tickets, customers, messages, AI actions. Without a database layer:
-- Data disappears when the server restarts
-- No relationships between entities (who created which ticket?)
-- No audit trail (what did the AI agent do and why?)
-
-This step creates three things:
-1. **ORM Models** — Python classes that represent database tables
-2. **Session Management** — How the app connects to and talks to the database
-3. **Alembic Migrations** — Version control for the database schema
+How data is structured, stored, and queried in the Customer Support Agent.
 
 ---
 
-## Files Created
+## 3.1 Why an ORM?
 
+Instead of writing raw SQL:
+```sql
+INSERT INTO tickets (id, subject, status, priority)
+VALUES ('abc-123', 'Help me', 'new', 'medium');
 ```
-├── alembic.ini              ← Alembic configuration
-├── alembic/
-│   ├── env.py               ← Bridges Alembic with our app config
-│   ├── script.py.mako       ← Template for migration files
-│   └── versions/            ← Migration files go here
-└── src/db/
-    ├── __init__.py           ← Re-exports all models
-    ├── models.py             ← SQLAlchemy ORM models (8 tables)
-    └── session.py            ← Async connection pool + session factory
+
+We define Python classes that **map to database tables**:
+```python
+ticket = Ticket(subject="Help me", status="new", priority="medium")
+db.add(ticket)
+await db.commit()
 ```
+
+**Benefits:**
+- **Type safety** — IDE catches typos, wrong types, missing fields
+- **Relationships** — `ticket.messages` auto-loads related messages
+- **Migrations** — Alembic compares models vs. database and generates migration scripts
+- **Portability** — same code works on PostgreSQL, MySQL, SQLite (for testing)
 
 ---
 
-## The Database Schema
+## 3.2 The Base Class
 
-```
-Customer ──creates──→ Ticket ──has──→ Message
-                        │
-                        ├──assigned_to──→ Agent
-                        ├──has──→ AgentAction (audit trail)
-                        └──tagged_with──→ Tag (many-to-many)
-
-KnowledgeArticle ──has──→ KBEmbedding (vector chunks for RAG)
-```
-
-### Tables at a Glance
-
-| Table | Purpose | Key Fields |
-|-------|---------|------------|
-| `customers` | People submitting tickets | email, name, metadata |
-| `agents` | AI + human support staff | name, skills, is_ai |
-| `tickets` | Core entity — a support request | status, priority, category, subject |
-| `messages` | Conversation thread on a ticket | sender_type, content |
-| `agent_actions` | Audit trail — what the AI did and why | action_type, reasoning, outcome |
-| `tags` | Labels for categorization | name, category |
-| `ticket_tags` | Junction: ticket ↔ tag (many-to-many) | ticket_id, tag_id |
-| `knowledge_articles` | KB articles for RAG search | title, content |
-| `kb_embeddings` | Vector chunks for similarity search | chunk_text, embedding, chunk_index |
-
----
-
-## File-by-File Breakdown
-
-### `src/db/models.py` — ORM Models
-
-#### What Is an ORM?
-
-ORM = Object-Relational Mapping. It maps Python → Database:
-
-```
-Python Class    ←→  Database Table
-Python Instance ←→  Database Row
-Python Attribute ←→ Database Column
-```
-
-**Without ORM (raw SQL):**
-```python
-cursor.execute("INSERT INTO tickets (subject, status) VALUES (%s, %s)", 
-               ("Help me", "new"))
-```
-Problems: SQL injection risk, no type safety, no autocomplete.
-
-**With ORM (SQLAlchemy):**
-```python
-ticket = Ticket(subject="Help me", status="new")
-session.add(ticket)
-await session.commit()
-```
-Benefits: safe, typed, readable, database-agnostic.
-
-#### The Base Class
+Every model inherits from a shared base:
 
 ```python
+from sqlalchemy.orm import DeclarativeBase
+
 class Base(DeclarativeBase):
     pass
 ```
 
-Every model inherits from `Base`. This lets SQLAlchemy and Alembic:
-- Discover all models (via `Base.metadata`)
-- Generate CREATE TABLE statements
-- Detect schema differences for migrations
+This is SQLAlchemy 2.0's modern approach. The old way was `Base = declarative_base()` — deprecated but still works.
 
-#### UUIDs as Primary Keys
-
-```python
-id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-```
-
-Why UUID instead of auto-increment integers?
-- **Security** — Can't guess the next ID (no `/tickets/1`, `/tickets/2`)
-- **Client-side generation** — No DB round-trip to get an ID
-- **Merge-safe** — No collisions when combining databases
-
-#### JSONB Columns
-
-```python
-metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, server_default="{}")
-```
-
-JSONB = flexible schema-less data inside a relational database. Perfect for:
-- Varying customer metadata: `{"company": "...", "plan": "pro"}`
-- AI context: `{"intent": "billing", "confidence": 0.92}`
-- Action data: `{"tool_name": "send_email", "result": "success"}`
-
-The `_` suffix (`metadata_`) avoids clashing with Python's built-in `metadata`. The `"metadata"` string sets the actual column name in the database.
-
-#### Relationships
-
-```python
-# In Customer:
-tickets: Mapped[list["Ticket"]] = relationship(back_populates="customer")
-
-# In Ticket:
-customer: Mapped["Customer"] = relationship(back_populates="tickets")
-```
-
-These don't create columns! They tell SQLAlchemy how to JOIN tables:
-```python
-customer = await session.get(Customer, customer_id)
-print(customer.tickets)  # → [Ticket1, Ticket2, ...]  (auto-loaded from DB)
-```
-
-`back_populates` creates a two-way link: `customer.tickets` and `ticket.customer`.
-
-#### CHECK Constraints
-
-```python
-CheckConstraint(
-    "status IN ('new', 'open', 'pending_customer', ...)",
-    name="valid_status",
-)
-```
-
-The database itself rejects invalid values. Even if a bug in our code tries to set `status="invalid"`, PostgreSQL says NO. Defense in depth.
-
-#### Indexes
-
-```python
-Index("idx_tickets_status", "status"),
-Index("idx_tickets_customer", "customer_id"),
-```
-
-Indexes speed up queries. Without an index on `status`, finding all open tickets scans EVERY row. With an index, it's nearly instant.
+**What `Base` provides:**
+- `Base.metadata` — tracks all tables, used by `create_all()` and Alembic
+- table creation: `Base.metadata.create_all(engine)` creates all tables
+- migration detection: Alembic compares `Base.metadata` to the database
 
 ---
 
-### `src/db/session.py` — Connection Management
+## 3.3 Models (Tables)
 
-#### Connection Pooling
+### Customer
+
+```
+Table: customers
+Purpose: People who submit support tickets
+```
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| `id` | UUID | Primary Key, auto-generated | Unique identifier |
+| `email` | String(255) | Unique, Not Null, Indexed | Login identity, ticket lookup |
+| `name` | String(255) | Nullable | Display name |
+| `metadata_` | JSONB | Default {} | Flexible key-value data (account info, preferences) |
+| `created_at` | TIMESTAMPTZ | Auto-set | Account creation time |
+
+**Relationships:** `customer.tickets` → list of all their tickets (one-to-many)
+
+**Why JSONB for metadata?** Relational databases are rigid — every row must have the same columns. JSONB lets us store flexible, schema-less data (like customer preferences or account type) without adding columns for every possible field.
+
+---
+
+### Agent
+
+```
+Table: agents
+Purpose: AI agents and human support staff
+```
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| `id` | UUID | Primary Key | Unique identifier |
+| `name` | String(255) | Not Null | Agent name (e.g., "AI Support Agent") |
+| `is_ai` | Boolean | Default True | Distinguishes AI from human agents |
+| `specialties` | ARRAY(String) | Nullable | Areas of expertise (e.g., ["billing", "technical"]) |
+| `metadata_` | JSONB | Default {} | Agent configuration data |
+| `created_at` | TIMESTAMPTZ | Auto-set | When the agent was created |
+
+**Relationships:**
+- `agent.assigned_tickets` → tickets assigned to this agent
+- `agent.actions` → audit trail entries this agent created
+
+---
+
+### Ticket ⭐ (Central Table)
+
+```
+Table: tickets
+Purpose: The core entity — almost everything relates to it
+Lifecycle: new → open → (pending_customer | pending_agent | escalated) → resolved → closed
+```
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| `id` | UUID | Primary Key | Unique identifier |
+| `customer_id` | UUID | Foreign Key → customers, Not Null | Who created this ticket |
+| `assigned_agent_id` | UUID | Foreign Key → agents, Nullable | Which agent handles it |
+| `subject` | String(500) | Not Null | Ticket title |
+| `status` | String(50) | Default "new", Check Constraint | Current lifecycle stage |
+| `priority` | String(20) | Default "medium" | Urgency level (low/medium/high/urgent) |
+| `category` | String(100) | Nullable | AI-classified category |
+| `sentiment` | String(50) | Nullable | Customer's emotional state |
+| `channel` | String(50) | Default "web" | Origin (web, email, api) |
+| `ai_confidence` | Float | Nullable | AI's classification confidence (0.0–1.0) |
+| `ai_context` | JSONB | Default {} | Full AI classification data (stored for debugging) |
+| `resolution_notes` | Text | Nullable | How the ticket was resolved |
+| `resolved_at` | TIMESTAMPTZ | Nullable | When resolution happened |
+| `resolved_by` | String(50) | Nullable | Who resolved it (customer/admin/ai_agent) |
+| `created_at` | TIMESTAMPTZ | Auto-set | Ticket creation time |
+| `updated_at` | TIMESTAMPTZ | Auto-updated | Last modification time |
+
+**Relationships:**
+- `ticket.customer` → the Customer who created it
+- `ticket.assigned_agent` → the Agent handling it
+- `ticket.messages` → all messages in this ticket's thread
+- `ticket.actions` → all AI agent actions (audit trail)
+- `ticket.tags` → categorization labels (many-to-many)
+
+**Check Constraint on status:**
+```python
+CheckConstraint(
+    "status IN ('new', 'open', 'in_progress', 'pending_customer', "
+    "'pending_agent', 'escalated', 'resolved', 'closed')",
+)
+```
+
+---
+
+### Message
+
+```
+Table: messages
+Purpose: Individual messages in a ticket's conversation thread
+```
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| `id` | UUID | Primary Key | Unique identifier |
+| `ticket_id` | UUID | Foreign Key → tickets, Not Null, Indexed | Which ticket this belongs to |
+| `sender_type` | String(50) | Check Constraint, Not Null | Who sent it: "customer", "ai_agent", "human_agent", "system" |
+| `content` | Text | Not Null | The message body |
+| `metadata_` | JSONB | Default {} | Additional data (e.g., AI model used, processing time) |
+| `created_at` | TIMESTAMPTZ | Auto-set | When the message was sent |
+
+---
+
+### AgentAction
+
+```
+Table: agent_actions
+Purpose: Audit trail — records every decision the AI makes
+```
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| `id` | UUID | Primary Key | Unique identifier |
+| `agent_id` | UUID | Foreign Key → agents, Not Null | Which agent performed this |
+| `ticket_id` | UUID | Foreign Key → tickets, Not Null, Indexed | Which ticket this is about |
+| `action_type` | String(100) | Not Null, Indexed | What was done: "classify_ticket", "search_kb", "generate_response", "escalate" |
+| `action_data` | JSONB | Default {} | Input/output data for this action |
+| `reasoning` | JSONB | Default {} | LLM's chain-of-thought explanation |
+| `outcome` | String(50) | Nullable | Result: "success", "escalated", "error" |
+| `created_at` | TIMESTAMPTZ | Auto-set | When the action happened |
+
+**Why JSONB for action_data and reasoning?** Each action type has different data. A classification action stores intent/priority/sentiment. A KB search stores query and results. JSONB accommodates this without separate tables.
+
+---
+
+### KnowledgeBaseArticle
+
+```
+Table: knowledge_base_articles
+Purpose: Support articles with vector embeddings for RAG search
+```
+
+| Column | Type | Constraints | Purpose |
+|--------|------|-------------|---------|
+| `id` | UUID | Primary Key | Unique identifier |
+| `title` | String(500) | Not Null | Article title (e.g., "How to Reset Your Password") |
+| `content` | Text | Not Null | Full article body |
+| `category` | String(100) | Nullable | Article category (e.g., "account", "billing") |
+| `tags` | ARRAY(String) | Nullable | Search tags |
+| `embedding` | VECTOR(384) | Nullable | 384-dimensional vector from sentence-transformers |
+| `metadata_` | JSONB | Default {} | Additional article data |
+| `created_at` | TIMESTAMPTZ | Auto-set | When the article was created |
+| `updated_at` | TIMESTAMPTZ | Auto-updated | Last modification time |
+
+**The `embedding` column:** This is a pgvector `VECTOR(384)` type. It stores the semantic meaning of the article as 384 floating-point numbers. When a customer asks a question, we embed their question and find the most similar article embeddings using cosine distance.
+
+---
+
+## 3.4 Database Connection (`src/db/session.py`)
+
+### Async Engine & Connection Pool
 
 ```python
 engine = create_async_engine(
     settings.DATABASE_URL,
-    pool_size=5,        # 5 connections always ready
-    max_overflow=10,    # 10 extra during spikes
-    pool_pre_ping=True, # Test before using
+    echo=settings.DEBUG,          # Print SQL queries in debug mode
+    pool_size=5,                  # Keep 5 connections open
+    max_overflow=10,              # Allow 10 more during spikes
+    pool_recycle=3600,            # Replace connections after 1 hour
 )
 ```
 
-**Without pooling:** Every request opens a new connection (slow — ~50ms each).
-**With pooling:** Connections are reused from a pool (fast — ~0.1ms).
+**Why connection pooling?** Opening a database connection takes ~50-100ms. For a web app handling 100 requests/second, that's 5-10 seconds of wasted time. The pool keeps connections open and reusable.
 
-```
-Request 1 ─→ [Pool: □□□□□] ─→ Take connection ─→ Use ─→ Return to pool
-Request 2 ─→ [Pool: □□□□ ] ─→ Take connection ─→ Use ─→ Return to pool
-```
-
-#### The Session Dependency
+### Session Management
 
 ```python
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_db_session():
+    """FastAPI dependency — provides a session per request."""
     async with async_session_factory() as session:
         try:
-            yield session           # Give session to route
-            await session.commit()  # Success → save changes
+            yield session       # Route uses the session
+            await session.commit()   # Auto-commit on success
         except Exception:
-            await session.rollback()  # Error → undo everything
-        finally:
-            await session.close()     # Always return to pool
+            await session.rollback() # Auto-rollback on error
+            raise
 ```
 
-Used in FastAPI routes via dependency injection:
+### Database Initialization (`init_db()`)
+
+Called once on startup via the FastAPI lifespan:
+
 ```python
-@app.get("/tickets")
-async def list_tickets(db: AsyncSession = Depends(get_db_session)):
-    result = await db.execute(select(Ticket))
+async def init_db():
+    # 1. Test connectivity
+    # 2. Enable pgvector extension: CREATE EXTENSION IF NOT EXISTS vector
+    # 3. Create all tables: Base.metadata.create_all()
+    # 4. Run schema migrations (add missing columns, etc.)
+    # 5. Ensure AI agent record exists in the agents table
+```
+
+---
+
+## 3.5 Repository Pattern (`src/db/repositories/`)
+
+Repositories encapsulate all SQL queries:
+
+```python
+# ❌ BAD — SQL in route handler
+@router.get("/tickets")
+async def list_tickets(db: AsyncSession):
+    result = await db.execute(select(Ticket).where(Ticket.status == "open"))
     return result.scalars().all()
+
+# ✅ GOOD — Repository abstracts it
+@router.get("/tickets")
+async def list_tickets(db: AsyncSession):
+    return await ticket_repo.get_tickets_by_status(db, "open")
 ```
 
-This implements the **Unit of Work** pattern: all database operations within one request are a single atomic transaction. Either everything succeeds, or nothing does.
-
----
-
-### Alembic — Database Migrations
-
-#### What Are Migrations?
-
-Migrations = version control for your database schema.
-
-```
-v1: CREATE TABLE tickets (id, subject)
-v2: ALTER TABLE tickets ADD COLUMN priority
-v3: ALTER TABLE tickets ADD COLUMN category
-```
-
-Without migrations: you'd manually run SQL on every environment. With Alembic: one command applies all pending changes.
-
-#### `alembic.ini`
-
-Configuration file. Key settings:
-```ini
-script_location = alembic          # Where migration scripts live
-file_template = %%(year)d_...      # Date-based naming
-```
-
-#### `alembic/env.py`
-
-Bridges Alembic with our app:
+**Eager loading** prevents N+1 query problems:
 ```python
-from src.config import settings
-from src.db.models import Base
-
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
-target_metadata = Base.metadata
+stmt = select(Ticket).options(
+    selectinload(Ticket.messages),      # Load messages in ONE query
+    selectinload(Ticket.agent_actions), # Load actions in ONE query
+    joinedload(Ticket.customer),        # Load customer via JOIN
+)
+# Without eager loading: accessing ticket.messages triggers a SEPARATE query
+# With it: everything loads in the initial query
 ```
-
-It reads our `.env` for the database URL and our models to know what the schema should look like.
-
-**Async support:** Since we use `asyncpg`, migrations must also run async. The `run_async_migrations()` function handles this.
-
----
-
-## How to Use
-
-### Generate the First Migration
-
-```bash
-# Make sure .env has your Supabase DATABASE_URL
-# Then generate migration from models
-alembic revision --autogenerate -m "initial tables"
-```
-
-This compares `models.py` against the actual database and generates a migration file in `alembic/versions/`.
-
-### Apply Migrations
-
-```bash
-# Apply all pending migrations to the database
-alembic upgrade head
-```
-
-### Other Useful Commands
-
-```bash
-alembic history            # Show migration history
-alembic current            # Show current database version
-alembic downgrade -1       # Undo last migration
-alembic revision --autogenerate -m "add new column"  # New migration
-```
-
----
-
-## What Supabase Gives You
-
-Since we're using Supabase, you can also:
-1. **View tables** in the Supabase Dashboard → Table Editor
-2. **Run SQL** in the SQL Editor
-3. **See data** visually without any CLI tools
-
-After running `alembic upgrade head`, check your Supabase dashboard to see all tables created!
-
----
-
-## What's Next?
-
-With the database ready, Phase 2 begins: **Core Agent**
-1. `src/agents/state.py` — LangGraph state schema
-2. `src/agents/nodes/classifier.py` — Ticket classification
-3. `src/tools/knowledge_base.py` — RAG search tool
-4. `src/agents/graph.py` — Main agent workflow
