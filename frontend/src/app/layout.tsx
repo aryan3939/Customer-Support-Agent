@@ -1,23 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
+import { SidebarContext } from "@/hooks/useSidebar";
 import "./globals.css";
-
-// =============================================================================
-// Sidebar State — shared via context so child pages can react to it
-// =============================================================================
-
-const SidebarContext = createContext({
-  collapsed: false,
-  toggle: () => {},
-});
-
-export function useSidebar() {
-  return useContext(SidebarContext);
-}
 
 // =============================================================================
 // Sidebar Component — collapsible left navigation
