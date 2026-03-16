@@ -1,23 +1,20 @@
 """
-LangGraph Workflow — the main agent graph.
+LangGraph Workflow — the AGENTIC agent graph with tool selection.
 
 WHY THIS FILE EXISTS:
 ---------------------
 This is the BRAIN of the entire application. It defines the agent's
-workflow as a state machine (graph):
+workflow as a state machine (graph) where the LLM CHOOSES which
+tools to call based on the customer's message.
 
-    [Ticket arrives] → [Classify] → [Search KB] → [Resolve] → [Validate] → [Respond]
-                            ↓                         ↑           ↓
-                       [Escalate?]                  [Retry]    [Escalate]
+BEFORE (fixed pipeline):
+    [Ticket] → [Classify] → [Search KB] → [Resolve] → [Validate] → [Respond]
+    
+AFTER (agentic tool selection):
+    [Ticket] → [Classify] → [Tool Agent] ⟲ (LLM picks tools) → [Respond] → [Validate] → [Finalize]
 
-Each box is a NODE (a function from the nodes/ folder).
-Each arrow is an EDGE (a connection, possibly conditional).
-
-LangGraph manages the flow:
-1. State enters the graph
-2. Each node processes it and returns updates
-3. Conditional edges decide which node runs next
-4. The graph terminates when it reaches the END node
+The key difference: the LLM DECIDES which tools to call (KB search,
+order lookup, password reset, etc.) instead of always doing the same steps.
 
 HOW TO USE:
 -----------
@@ -26,30 +23,175 @@ HOW TO USE:
     result = await process_ticket(
         ticket_id="abc-123",
         customer_email="user@example.com",
-        subject="Can't reset password",
-        message="I've tried 3 times but no email arrives",
+        subject="Where is my order #12345?",
+        message="I ordered 3 days ago and haven't received anything",
         channel="web",
     )
     
-    print(result["final_response"])  # The AI's response
-    print(result["actions_taken"])   # Audit trail
+    # The LLM will CHOOSE to call check_order_status("12345")
+    # instead of always searching the KB
 """
 
 from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import ToolNode
+
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents.edges.conditions import (
     should_escalate_after_classify,
     should_escalate_after_validate,
+    should_continue_tools,
 )
 from src.agents.nodes.classifier import classify_ticket
 from src.agents.nodes.escalator import escalate_ticket
-from src.agents.nodes.resolver import generate_response
 from src.agents.nodes.validator import validate_response
 from src.agents.state import TicketState
-from src.tools.knowledge_base import search_knowledge_base
+from src.agents.tools import ALL_TOOLS
+from src.agents.llm import get_llm
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# Tool Agent System Prompt
+# =============================================================================
+
+TOOL_AGENT_SYSTEM_PROMPT = """You are an AI customer support agent with access to tools.
+
+Your job is to help the customer by using the appropriate tools to gather information
+and take actions. You should:
+
+1. ANALYZE the customer's message to understand what they need
+2. DECIDE which tools to call (you can call multiple tools if needed)
+3. USE the tool results to formulate a helpful response
+
+AVAILABLE TOOLS:
+- search_knowledge_base: Search our help articles for policies, how-to guides, FAQs
+- check_order_status: Look up order tracking/shipping status by order ID
+- create_refund_request: Initiate a refund (only when customer explicitly requests one)
+- reset_customer_password: Send a password reset email 
+- lookup_customer_info: Check customer account details and history
+- create_bug_report: File a bug report for technical issues
+
+GUIDELINES:
+- Use search_knowledge_base for general questions, how-to, policies
+- Use check_order_status when they mention an order ID or ask about delivery
+- Use reset_customer_password when they can't log in or forgot password
+- Use lookup_customer_info to personalize your response with account context
+- You CAN call multiple tools in sequence if needed
+- After gathering all needed information, generate your final response
+- Be empathetic, specific, and concise in your response
+- If you provided a complete solution, suggest marking the ticket as resolved
+
+CONVERSATION HISTORY:
+{conversation_history}
+
+TICKET CLASSIFICATION:
+- Intent: {intent}
+- Category: {category}  
+- Priority: {priority}
+- Sentiment: {sentiment}
+- Customer Email: {customer_email}
+"""
+
+
+# =============================================================================
+# Tool Agent Node — LLM decides which tools to call
+# =============================================================================
+
+async def tool_agent(state: TicketState) -> dict:
+    """
+    The AGENTIC node — LLM decides which tools to use.
+    
+    This replaces the old fixed search_kb node. Instead of always
+    searching the KB, the LLM analyzes the message and decides:
+    - Which tools to call (0, 1, or multiple)
+    - What arguments to pass
+    - When it has enough info to respond
+    
+    Uses LangChain's bind_tools() to give the LLM access to tools.
+    """
+    logger.info(
+        "tool_agent_thinking",
+        ticket_id=state.get("ticket_id", "unknown"),
+    )
+    
+    # Format conversation history for the prompt
+    history_text = "No previous messages."
+    conv_history = state.get("conversation_history", [])
+    if conv_history:
+        history_lines = []
+        for msg in conv_history[-10:]:  # Last 10 messages max
+            role = msg.get("role", msg.get("sender_type", "unknown"))
+            content = msg.get("content", "")
+            history_lines.append(f"[{role}]: {content}")
+        history_text = "\n".join(history_lines)
+    
+    # Build the system prompt with context
+    system_prompt = TOOL_AGENT_SYSTEM_PROMPT.format(
+        conversation_history=history_text,
+        intent=state.get("intent", "unknown"),
+        category=state.get("category", "general"),
+        priority=state.get("priority", "medium"),
+        sentiment=state.get("sentiment", "neutral"),
+        customer_email=state.get("customer_email", ""),
+    )
+    
+    # Build the user message
+    user_content = (
+        f"Subject: {state.get('subject', '')}\n"
+        f"Message: {state.get('message', '')}"
+    )
+    
+    # Get LLM with tools bound
+    llm = get_llm()
+    llm_with_tools = llm.bind_tools(ALL_TOOLS)
+    
+    # Construct messages: system + any existing tool conversation + current ticket
+    messages = state.get("messages", [])
+    if not messages:
+        # First call — set up the conversation
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_content),
+        ]
+    
+    # Call the LLM
+    response = await llm_with_tools.ainvoke(messages)
+    
+    logger.info(
+        "tool_agent_response",
+        ticket_id=state.get("ticket_id", "unknown"),
+        has_tool_calls=bool(response.tool_calls),
+        num_tool_calls=len(response.tool_calls) if response.tool_calls else 0,
+    )
+    
+    # Record the tool selection in the audit trail
+    action = {
+        "action_type": "tool_agent_reasoning",
+        "action_data": {
+            "tool_calls": [
+                {"name": tc["name"], "args": tc["args"]}
+                for tc in (response.tool_calls or [])
+            ],
+            "has_final_response": not bool(response.tool_calls),
+        },
+        "reasoning": "LLM decided which tools to call based on the customer message",
+        "outcome": "success",
+    }
+    
+    result = {
+        "messages": [response],
+        "current_node": "tool_agent",
+        "actions_taken": state.get("actions_taken", []) + [action],
+    }
+    
+    # If no tool calls, the LLM is done — extract the response
+    if not response.tool_calls:
+        result["draft_response"] = response.content
+    
+    return result
 
 
 # =============================================================================
@@ -58,7 +200,7 @@ logger = get_logger(__name__)
 
 def build_graph() -> StateGraph:
     """
-    Construct the LangGraph workflow for ticket processing.
+    Construct the AGENTIC LangGraph workflow.
     
     The graph looks like this:
     
@@ -68,12 +210,12 @@ def build_graph() -> StateGraph:
         [classify] ──→ should_escalate? ──→ [escalate] → END
           │                                     ↑
           ▼ (continue)                          │
-        [search_kb]                             │
-          │                                     │
-          ▼                                     │
-        [resolve]                               │
-          │                                     │
-          ▼                                     │
+        [tool_agent] ◄──┐                      │
+          │              │                      │
+          ▼              │                      │
+        should_continue? │                      │
+          │    └─ tools ─┘                      │
+          ▼ (done)                              │
         [validate] ──→ should_escalate? ────────┘
           │
           ▼ (approved)
@@ -87,51 +229,55 @@ def build_graph() -> StateGraph:
     graph = StateGraph(TicketState)
     
     # ---- Add Nodes ----
-    # Each node is a function that takes state and returns partial updates
     graph.add_node("classify", classify_ticket)
-    graph.add_node("search_kb", search_knowledge_base)
-    graph.add_node("resolve", generate_response)
+    graph.add_node("tool_agent", tool_agent)
+    graph.add_node("tools", ToolNode(ALL_TOOLS))  # Auto-executes tool calls
     graph.add_node("validate", validate_response)
     graph.add_node("escalate", escalate_ticket)
     graph.add_node("respond", _finalize_response)
     
     # ---- Set Entry Point ----
-    # Every ticket starts at classification
     graph.set_entry_point("classify")
     
     # ---- Add Edges ----
     
-    # After classification: escalate or continue?
+    # After classification: escalate or continue to tool agent?
     graph.add_conditional_edges(
         "classify",
         should_escalate_after_classify,
         {
-            "escalate": "escalate",   # Urgent+angry → escalate
-            "search_kb": "search_kb", # Normal → search KB
+            "escalate": "escalate",
+            "continue": "tool_agent",
         },
     )
     
-    # After KB search: always go to resolver
-    graph.add_edge("search_kb", "resolve")
+    # After tool_agent: did the LLM call tools or is it done?
+    graph.add_conditional_edges(
+        "tool_agent",
+        should_continue_tools,
+        {
+            "tools": "tools",       # LLM called tools → execute them
+            "done": "validate",     # LLM is done → validate response
+        },
+    )
     
-    # After resolver: always go to validator
-    graph.add_edge("resolve", "validate")
+    # After tool execution: always go back to tool_agent
+    # (LLM sees the results and can call more tools or respond)
+    graph.add_edge("tools", "tool_agent")
     
     # After validation: escalate, retry, or respond?
     graph.add_conditional_edges(
         "validate",
         should_escalate_after_validate,
         {
-            "escalate": "escalate",   # Validation failed too many times
-            "resolve": "resolve",     # Retry resolution
-            "respond": "respond",     # Approved! Send response
+            "escalate": "escalate",
+            "resolve": "tool_agent",    # Retry → back to tool agent
+            "respond": "respond",
         },
     )
     
-    # After escalation: done
+    # Terminal nodes
     graph.add_edge("escalate", END)
-    
-    # After responding: done
     graph.add_edge("respond", END)
     
     return graph
@@ -144,13 +290,6 @@ def build_graph() -> StateGraph:
 async def _finalize_response(state: TicketState) -> dict:
     """
     Final node — marks the ticket as resolved.
-    
-    In a full implementation, this would:
-    - Save the response to the database
-    - Send the email/notification
-    - Update ticket status to "resolved"
-    
-    For now, it just logs and records the action.
     """
     logger.info(
         "ticket_resolved",
@@ -178,7 +317,6 @@ async def _finalize_response(state: TicketState) -> dict:
 # Compiled Graph (singleton)
 # =============================================================================
 
-# Build and compile once at import time
 _graph = build_graph()
 compiled_graph = _graph.compile()
 
@@ -193,9 +331,10 @@ async def process_ticket(
     subject: str,
     message: str,
     channel: str = "web",
+    conversation_history: list[dict] | None = None,
 ) -> TicketState:
     """
-    Process a support ticket through the AI agent workflow.
+    Process a support ticket through the AGENTIC AI workflow.
     
     This is the MAIN ENTRY POINT for the agent system.
     
@@ -205,11 +344,12 @@ async def process_ticket(
         subject: Ticket subject line
         message: Customer's message
         channel: Source channel (web, email, api)
+        conversation_history: Previous messages for context (follow-ups)
     
     Returns:
         Final TicketState with:
         - final_response: AI-generated response (or escalation message)
-        - actions_taken: Complete audit trail
+        - actions_taken: Complete audit trail showing WHICH tools were used
         - needs_escalation: Whether a human agent should take over
         - All classification data (intent, category, priority, sentiment)
     """
@@ -218,6 +358,7 @@ async def process_ticket(
         ticket_id=ticket_id,
         subject=subject,
         channel=channel,
+        has_history=bool(conversation_history),
     )
     
     # Create the initial state
@@ -233,15 +374,11 @@ async def process_ticket(
         "kb_results": [],
         "tool_results": [],
         "customer_history": {},
+        "conversation_history": conversation_history or [],
+        "messages": [],
     }
     
-    # ── LangSmith Tracing Config ──────────────────────────────────────────
-    # This config makes every ticket fully traceable in LangSmith:
-    #   - run_name:  Shows as "ticket-<id>" instead of generic "RunnableSequence"
-    #   - tags:      Filterable labels (channel, app name)
-    #   - metadata:  Searchable key-value pairs (ticket_id, email, subject)
-    #   - thread_id: Groups all runs for the same ticket into one thread
-    #                (so follow-up messages appear under the same conversation)
+    # LangSmith tracing config
     config = {
         "run_name": f"ticket-{ticket_id[:8]}",
         "tags": ["customer-support", f"channel:{channel}"],
@@ -254,6 +391,7 @@ async def process_ticket(
         "configurable": {
             "thread_id": ticket_id,
         },
+        "recursion_limit": 25,
     }
     
     # Run the graph with tracing

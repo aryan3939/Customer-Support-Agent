@@ -152,6 +152,14 @@ class TicketState(TypedDict, total=False):
     kb_results: list[dict]          # Relevant KB article chunks
     customer_history: dict          # Past tickets, account info
     tool_results: list[dict]        # Results from tool calls
+    conversation_history: list[dict]  # Previous messages for follow-ups
+    
+    # =========================================================================
+    # 3b. TOOL-CALLING — LangGraph message list for agentic tool loop
+    # =========================================================================
+    # Annotated with add_messages so LangGraph appends instead of replacing.
+    # This stores the LLM ↔ tool conversation during the tool-selection phase.
+    messages: Annotated[list, add_messages]
     
     # =========================================================================
     # 4. PROCESSING — internal state tracking

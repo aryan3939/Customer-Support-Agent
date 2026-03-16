@@ -373,12 +373,28 @@ async def add_message(
             # Ensure AI agent exists for the audit trail
             ai_agent = await get_or_create_ai_agent(db)
             
+            # ── Conversation Memory ──────────────────────────────────
+            # Fetch previous messages so the AI has context about
+            # what was already discussed. This is what makes the agent
+            # remember and adapt on follow-ups instead of treating
+            # each message independently.
+            prev_messages = await get_messages_for_ticket(db, tid)
+            conversation_history = [
+                {
+                    "role": m.sender_type,
+                    "content": m.content,
+                }
+                for m in prev_messages
+                if m.content  # Skip empty messages
+            ]
+            
             agent_result = await process_ticket(
                 ticket_id=ticket_id,
                 customer_email=ticket.customer.email if ticket.customer else "",
                 subject=ticket.subject,
                 message=request.content,
                 channel="web",
+                conversation_history=conversation_history,
             )
             
             ai_response = agent_result.get("final_response") or agent_result.get("draft_response", "")

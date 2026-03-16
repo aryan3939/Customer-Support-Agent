@@ -91,6 +91,9 @@ async def generate_response(state: TicketState) -> dict:
     # Build customer history context
     history_context = _format_customer_history(state.get("customer_history", {}))
     
+    # Build conversation history context (for follow-ups)
+    conv_history = _format_conversation_history(state.get("conversation_history", []))
+    
     # Construct the prompt with all available context
     user_message = f"""CUSTOMER TICKET:
 Subject: {state.get("subject", "")}
@@ -109,7 +112,11 @@ RELEVANT KNOWLEDGE BASE ARTICLES:
 CUSTOMER HISTORY:
 {history_context if history_context else "New customer, no previous history."}
 
-Generate a helpful response that resolves the customer's issue."""
+PREVIOUS CONVERSATION:
+{conv_history if conv_history else "No previous messages — this is a new ticket."}
+
+Generate a helpful response that resolves the customer's issue.
+If there is previous conversation, acknowledge what was discussed and build on it."""
 
     try:
         llm = get_llm()
@@ -200,3 +207,27 @@ def _format_customer_history(history: dict) -> str:
             parts.append(f"- Previous: {ticket.get('subject', '')} [{ticket.get('status', '')}]")
     
     return "\n".join(parts) if parts else ""
+
+
+def _format_conversation_history(history: list[dict]) -> str:
+    """Format previous conversation messages into a readable context string."""
+    if not history:
+        return ""
+    
+    lines = []
+    for msg in history[-10:]:  # Last 10 messages to keep context manageable
+        role = msg.get("role", msg.get("sender_type", "unknown"))
+        content = msg.get("content", "")
+        
+        # Map sender types to readable labels
+        role_labels = {
+            "customer": "Customer",
+            "ai_agent": "AI Agent",
+            "human_agent": "Human Agent",
+            "system": "System",
+        }
+        label = role_labels.get(role, role.title())
+        lines.append(f"[{label}]: {content}")
+    
+    return "\n".join(lines)
+

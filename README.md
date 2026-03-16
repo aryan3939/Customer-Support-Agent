@@ -326,4 +326,4 @@ This is a personal portfolio project, but suggestions and feedback are welcome! 
 
 ## 📄 License
 
-This project is for educational and portfolio purposes. MIT License.
+ MIT License.

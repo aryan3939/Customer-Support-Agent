@@ -12,12 +12,13 @@ goes next based on the current state.
 
 HOW CONDITIONAL EDGES WORK:
 ---------------------------
-    [Classify] → should_escalate_after_classify() → returns "escalate" or "search_kb"
+    [Classify] → should_escalate_after_classify() → returns "escalate" or "continue"
                      ↓                                  ↓
-              [Escalate Node]                   [Search KB Node]
-
-The function examines the state and returns a STRING that matches
-one of the edge labels in the graph definition.
+              [Escalate Node]                   [Tool Agent Node]
+    
+    [Tool Agent] → should_continue_tools() → returns "tools" or "done"
+                     ↓                           ↓
+              [ToolNode executor]          [Validate Node]
 """
 
 from src.agents.state import TicketState
@@ -29,7 +30,7 @@ logger = get_logger(__name__)
 
 def should_escalate_after_classify(state: TicketState) -> str:
     """
-    After classification: escalate immediately or continue processing?
+    After classification: escalate immediately or continue to tool agent?
     
     ESCALATE if:
         - Priority is urgent AND sentiment is angry
@@ -41,7 +42,7 @@ def should_escalate_after_classify(state: TicketState) -> str:
     
     Returns:
         "escalate" — route to escalator node
-        "search_kb" — route to knowledge base search
+        "continue" — route to agentic tool agent
     """
     priority = state.get("priority", "medium")
     sentiment = state.get("sentiment", "neutral")
@@ -68,7 +69,39 @@ def should_escalate_after_classify(state: TicketState) -> str:
         )
         return "escalate"
     
-    return "search_kb"
+    return "continue"
+
+
+def should_continue_tools(state: TicketState) -> str:
+    """
+    After the tool agent: did the LLM call tools, or is it done?
+    
+    This is the CORE AGENTIC ROUTING:
+    - If the LLM's last message has tool_calls → execute those tools
+    - If the LLM responded with text (no tool_calls) → it's done, validate
+    
+    Returns:
+        "tools" — execute the tool calls the LLM requested
+        "done"  — LLM is done, proceed to validation
+    """
+    messages = state.get("messages", [])
+    
+    if not messages:
+        return "done"
+    
+    last_message = messages[-1]
+    
+    # Check if the last message has tool calls
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        logger.info(
+            "tool_agent_calling_tools",
+            num_tools=len(last_message.tool_calls),
+            tools=[tc["name"] for tc in last_message.tool_calls],
+            ticket_id=state.get("ticket_id"),
+        )
+        return "tools"
+    
+    return "done"
 
 
 def should_escalate_after_validate(state: TicketState) -> str:
