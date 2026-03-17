@@ -2,6 +2,8 @@
 
 An **autonomous AI-powered customer support system** built with **LangGraph**, **FastAPI**, **Supabase (PostgreSQL + Auth)**, and a **Next.js** frontend. The AI agent classifies incoming tickets, searches a vector knowledge base (RAG), generates context-aware responses, and escalates to human agents when needed — all while maintaining a complete audit trail.
 
+🌐 **Live Demo:** [customer-support-agent-one.vercel.app](https://customer-support-agent-one.vercel.app/)
+
 ---
 
 ## ✨ Key Features
@@ -320,6 +322,26 @@ Extracts user email + role → Applies permissions
 
 ---
 
+## ☁️ Deployment
+
+The app is deployed for **free** across three platforms:
+
+| Component | Platform | Live URL |
+|-----------|----------|----------|
+| **Frontend** | [Vercel](https://vercel.com) | [customer-support-agent-one.vercel.app](https://customer-support-agent-one.vercel.app/) |
+| **Backend** | [Hugging Face Spaces](https://huggingface.co/spaces) | [aryan3939-customer-support-agent.hf.space](https://aryan3939-customer-support-agent.hf.space) |
+| **Database** | [Supabase](https://supabase.com) | PostgreSQL + pgvector (free tier) |
+| **LLM** | [Groq](https://groq.com) | `openai/gpt-oss-120b` (free tier) |
+
+### Self-Hosting
+
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for step-by-step instructions to deploy your own instance on:
+- **Backend:** Hugging Face Spaces (Docker, 2GB RAM free)
+- **Frontend:** Vercel (unlimited for personal use)
+- **Database:** Supabase (500MB free, pgvector built-in)
+
+---
+
 ## 🤝 Contributing
 
 This is a personal portfolio project, but suggestions and feedback are welcome! Feel free to open an issue or submit a pull request.
@@ -327,3 +349,4 @@ This is a personal portfolio project, but suggestions and feedback are welcome! 
 ## 📄 License
 
  MIT License.
+
