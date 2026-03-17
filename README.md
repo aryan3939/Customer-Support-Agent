@@ -335,18 +335,13 @@ The app is deployed for **free** across three platforms:
 
 ### Self-Hosting
 
-See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for step-by-step instructions to deploy your own instance on:
-- **Backend:** Hugging Face Spaces (Docker, 2GB RAM free)
-- **Frontend:** Vercel (unlimited for personal use)
-- **Database:** Supabase (500MB free, pgvector built-in)
+To deploy your own instance, you need:
+1. A `Dockerfile` (included) for the backend → deploy on [Hugging Face Spaces](https://huggingface.co/new-space) (Docker SDK)
+2. Set **Root Directory** to `frontend` on [Vercel](https://vercel.com/new) for the frontend
+3. Copy `.env.example` and fill in your Supabase + LLM API keys
 
 ---
 
-## 🤝 Contributing
-
-This is a personal portfolio project, but suggestions and feedback are welcome! Feel free to open an issue or submit a pull request.
-
 ## 📄 License
 
- MIT License.
-
+MIT License.
