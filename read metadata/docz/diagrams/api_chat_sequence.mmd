@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant Client
+    participant API as FastAPI /api/chat
+    participant Sessions as SessionManager
+    participant Agent as ChatAgent
+    participant Graph as LangGraph
+
+    Client->>API: ChatRequest(message, session_id)
+    API->>Sessions: get_or_create(session_id)
+    Sessions-->>API: ChatAgent instance
+    API->>Agent: chat(message)
+    Agent->>Graph: invoke(state)
+    Graph-->>Agent: AI message
+    Agent-->>API: response text
+    API->>API: extract source URLs + latency
+    API-->>Client: ChatResponse

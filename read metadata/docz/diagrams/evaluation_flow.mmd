@@ -1,0 +1,7 @@
+flowchart TD
+  A[Load GOLDEN_QUERIES] --> B[Embed query]
+  B --> C[Vector retrieval top-k]
+  C --> D[Match expected source patterns]
+  D --> E[Compute hit + reciprocal rank]
+  E --> F[Aggregate HR@K and MRR@K]
+  F --> G[Report summary + misses]

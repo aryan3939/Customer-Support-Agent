@@ -1,0 +1,17 @@
+flowchart LR
+  A[Documentation Sitemap] --> B[URL Filtering]
+  B --> C[Crawl4AI Scrape]
+  C --> D[Markdown Cleaning]
+  D --> E[Chunking]
+  E --> F[Embeddings]
+  F --> G[(Supabase: sources + documents)]
+
+  H[User Query] --> I[LangGraph Router]
+  I -->|Direct| J[Generate Direct]
+  I -->|RAG Path| K[Retrieve]
+  K --> L[Grade Documents]
+  L -->|Relevant| M[Generate]
+  L -->|No docs + retries| N[Rewrite Query]
+  N --> K
+  J --> O[Final Response]
+  M --> O

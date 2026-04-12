@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant Client
+    participant API as FastAPI /api/stats
+    participant VS as VectorStore
+    participant DB as Supabase
+
+    Client->>API: GET /api/stats
+    API->>VS: get_source_count()
+    VS->>DB: count active sources
+    DB-->>VS: source count
+    API->>VS: get_document_count()
+    VS->>DB: count documents
+    DB-->>VS: document count
+    API-->>Client: StatsResponse(total_sources, total_chunks)

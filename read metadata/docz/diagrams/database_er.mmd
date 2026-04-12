@@ -1,0 +1,44 @@
+erDiagram
+    SOURCES ||--o{ DOCUMENTS : contains
+    CONVERSATIONS ||--o{ MESSAGES : contains
+
+    SOURCES {
+        uuid id
+        text url
+        text title
+        text section_category
+        text content_hash
+        text raw_content
+        jsonb crawl_metadata
+        boolean is_active
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    DOCUMENTS {
+        uuid id
+        uuid source_id
+        text content
+        text embedding_vector_384
+        int chunk_index
+        jsonb metadata
+        timestamptz created_at
+    }
+
+    CONVERSATIONS {
+        uuid id
+        text title
+        jsonb metadata
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    MESSAGES {
+        uuid id
+        uuid conversation_id
+        text role
+        text content
+        int sequence
+        jsonb metadata
+        timestamptz created_at
+    }

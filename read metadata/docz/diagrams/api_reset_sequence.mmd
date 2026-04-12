@@ -1,0 +1,9 @@
+sequenceDiagram
+    participant Client
+    participant API as FastAPI /api/chat/reset
+    participant Sessions as SessionManager
+
+    Client->>API: POST /api/chat/reset?session_id=...
+    API->>Sessions: reset(session_id)
+    Sessions-->>API: bool reset status
+    API-->>Client: reset response payload

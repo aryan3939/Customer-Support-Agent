@@ -1,0 +1,11 @@
+flowchart TD
+  A[Incoming User Message] --> B{route_query}
+  B -->|Greeting/Meta| C[generate_direct]
+  B -->|Needs retrieval| D[retrieve]
+  D --> E[grade_documents]
+  E --> F{should_rewrite}
+  F -->|rewrite| G[rewrite_query]
+  G --> D
+  F -->|generate| H[generate]
+  C --> I[Return AI Message]
+  H --> I

@@ -1,0 +1,12 @@
+flowchart TD
+  A[run_ingestion] --> B[get_target_urls]
+  B --> C[scrape_pages_sync]
+  C --> D{Content changed?}
+  D -->|No| E[Skip]
+  D -->|Yes| F[upsert_source]
+  F --> G[chunk_text]
+  G --> H[embed_batch]
+  H --> I[store_documents]
+  E --> J[Update stats]
+  I --> J
+  J --> K[Summary]
